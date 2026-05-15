@@ -1,11 +1,17 @@
 {
   "name": "inloop",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Meeting intelligence router",
+  "main": "src/index.js",
+  "type": "commonjs",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/index.js",
+    "dev": "nodemon --config nodemon.json",
+    "lint": "eslint . --ext .js",
+    "test": "jest"
   },
+  "engines": { "node": ">=18" },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/rashida53/inloop.git"
@@ -13,17 +19,26 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
-  "bugs": {
-    "url": "https://github.com/rashida53/inloop/issues"
-  },
+  "bugs": { "url": "https://github.com/rashida53/inloop/issues" },
   "homepage": "https://github.com/rashida53/inloop#readme",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.96.0",
     "@slack/web-api": "^7.16.0",
     "@supabase/supabase-js": "^2.105.4",
-    "dotenv": "^17.4.2",
-    "express": "^5.2.1",
+    "express": "^4.18.2",
+    "dotenv": "^16.0.3",
+    "morgan": "^1.10.0",
+    "pino": "^8.14.0",
+    "pino-http": "^8.0.0",
+    "express-async-errors": "^3.1.1",
+    "uuid": "^9.0.0",
     "pg": "^8.20.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14",
+    "eslint": "^10.4.0",
+    "jest": "^30.4.2",
+    "prettier": "^3.8.3",
+    "supertest": "^7.2.2"
   }
 }
