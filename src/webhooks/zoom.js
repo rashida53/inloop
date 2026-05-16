@@ -2,7 +2,11 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
 const idempotency = require('../db/idempotency');
+const userDirectory = require('../users');
+const meetings = require('../db/meetings');
 const { adaptZoomPayload } = require('../adapters/zoom-adapter');
+const { extractFromRecording } = require('../extraction');
+const { deliverToSlack } = require('../delivery');
 
 /**
  * Production-grade Zoom webhook handler for Express.
@@ -123,51 +127,13 @@ async function handleMeetingSummaryCompleted(event, res) {
 
     // Process asynchronously to keep HTTP response fast
     // This prevents Zoom from timing out and retrying the webhook
-    setImmediate(async () => {
-      try {
-        logger.info({
-          zoomMeetingId,
-          idempotencyKey,
-          title,
-          attendeeCount,
-        }, 'Processing meeting for extraction and delivery');
-
-        // TODO: Implement extraction/delivery pipeline
-        // Pass the normalized meetingSummary object to downstream handlers:
-        // - extractFromRecording(meetingSummary): transcribe, extract with Claude
-        // - persistToDatabase(meetingSummary): store in meetings table
-        // - deliverToSlack(meetingSummary): send summary to relevant channels
-        //
-        // Example:
-        //   const extracted = await extractFromRecording(meetingSummary);
-        //   await db.query('INSERT INTO meetings (...) VALUES (...)', [...]
-        //   await deliverToSlack(extracted);
-
-        // Mark as done in idempotency store
-        await idempotency.saveResponse(idempotencyKey, {
-          ok: true,
-          processed: true,
-          zoomMeetingId,
-          message: 'Meeting queued for extraction and delivery',
-        });
-
-        logger.info({ zoomMeetingId, idempotencyKey }, 'Meeting processing completed');
-      } catch (err) {
-        logger.error({
-          err,
-          zoomMeetingId,
-          idempotencyKey,
-          message: err.message,
-        }, 'Error processing meeting in async handler');
-
-        // Mark as failed in idempotency store so retries are allowed
-        await idempotency.saveResponse(
-          idempotencyKey,
-          { ok: false, error: err.message },
-          'failed',
-          err.message
+    setImmediate(() => {
+      processMeetingAsync({ meetingSummary, event, idempotencyKey }).catch((err) => {
+        logger.error(
+          { err, zoomMeetingId, idempotencyKey },
+          'processMeetingAsync escaped its own try/catch (should not happen)'
         );
-      }
+      });
     });
 
     // Return 202 Accepted immediately; Zoom will retry if we don't respond in time
@@ -175,6 +141,83 @@ async function handleMeetingSummaryCompleted(event, res) {
   } catch (err) {
     logger.error({ err, event }, 'Unhandled error in meeting.summary_completed');
     res.status(500).json({ ok: false, message: 'Internal error' });
+  }
+}
+
+/**
+ * Background pipeline for a single meeting.summary_completed event.
+ * Runs after the 202 has been returned to Zoom.
+ *
+ * Steps (host-only-DM MVP):
+ *   1. Look up the host in the users table (so we know whether to set
+ *      host_email on the meeting row and whether to DM the host).
+ *   2. Upsert the meeting record from the webhook payload. Captures the
+ *      raw event for audit even if downstream steps fail.
+ *   3. Extract intelligence via Claude. Today this throws "transcript
+ *      required" because nothing upstream transcribes the recording yet —
+ *      that gap surfaces here intentionally, which is the right place
+ *      for it once the transcription step is wired in upstream of this
+ *      pipeline.
+ *   4. If the host is internal (found in users) and has a slack_id,
+ *      post the digest DM. External-hosted meetings get extraction but
+ *      no Slack delivery.
+ *   5. Persist extraction results + digest metadata onto the meeting row.
+ *   6. Resolve idempotency: done on success, failed on any throw so
+ *      Zoom retries are honored.
+ */
+async function processMeetingAsync({ meetingSummary, event, idempotencyKey }) {
+  const zoomMeetingId = meetingSummary.zoomMeetingId;
+  const log = logger.child({ zoomMeetingId, idempotencyKey });
+
+  try {
+    log.info({ title: meetingSummary.title }, 'Processing meeting');
+
+    const host = await userDirectory.findByEmail(meetingSummary.hostEmail);
+
+    await meetings.upsertFromWebhook(meetingSummary, event, {
+      knownHostEmail: host?.email || null,
+    });
+
+    const intelligence = await extractFromRecording(meetingSummary);
+
+    let delivery = null;
+    if (host?.slack_id) {
+      delivery = await deliverToSlack({
+        meetingSummary,
+        intelligence,
+        target: { userId: host.slack_id },
+      });
+    } else {
+      log.info(
+        { hostEmail: meetingSummary.hostEmail, hostInUsersTable: !!host },
+        'Meeting host has no Slack account in users table; extraction completed but no DM sent'
+      );
+    }
+
+    await meetings.saveExtractionAndDigest(zoomMeetingId, intelligence, delivery);
+
+    await idempotency.saveResponse(idempotencyKey, {
+      ok: true,
+      processed: true,
+      delivered: !!delivery,
+      zoomMeetingId,
+      digestTs: delivery?.ts || null,
+    });
+
+    log.info({ delivered: !!delivery, digestTs: delivery?.ts }, 'Meeting processing complete');
+  } catch (err) {
+    log.error({ err, message: err.message }, 'Error processing meeting');
+
+    await meetings.recordError(zoomMeetingId, err.message).catch((dbErr) => {
+      log.error({ dbErr }, 'Failed to record meeting error on row');
+    });
+
+    await idempotency.saveResponse(
+      idempotencyKey,
+      { ok: false, error: err.message },
+      'failed',
+      err.message
+    );
   }
 }
 
