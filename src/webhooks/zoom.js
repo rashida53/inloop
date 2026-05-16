@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
 const idempotency = require('../db/idempotency');
+const { adaptZoomPayload } = require('../adapters/zoom-adapter');
 
 /**
  * Production-grade Zoom webhook handler for Express.
@@ -54,44 +55,43 @@ function handleUrlValidation(event, res) {
 /**
  * Handle meeting.summary_completed events.
  * This event indicates a meeting has completed and summary/recording info is available.
- * We extract meeting metadata and queue for async processing (transcription, AI extraction, etc.).
+ * We normalize the payload via the adapter, then queue for async processing.
  *
  * Zoom note: The event payload structure varies slightly between meeting types (in-person, recurring, etc.).
- * We defensively extract fields with null coalescing to prevent crashes.
+ * The adapter handles all defensive extraction and normalization.
  */
 async function handleMeetingSummaryCompleted(event, res) {
   try {
     const { timestamp, event_id } = event;
     const payload = event.object || {};
 
-    // Defensively extract meeting metadata to prevent crashes from missing fields
-    const zoomMeetingId = payload.id || payload.meeting_id;
-    const meetingTopic = payload.topic || payload.subject || 'Untitled Meeting';
-    const hostEmail = payload.host_email || payload.organizer || 'unknown@zoom.us';
-    const startTime = payload.start_time || new Date().toISOString();
-    const duration = payload.duration || 0;
-    const recording = payload.recording_files || [];
-    const participants = payload.participants || [];
+    // Normalize and validate the Zoom payload using the adapter
+    // This single call handles all extraction, validation, field normalization, and error handling
+    const meetingSummary = adaptZoomPayload(payload, event_id);
 
-    if (!zoomMeetingId) {
-      logger.warn({ event_id, payload }, 'meeting.summary_completed event missing meeting ID');
-      return res.status(400).json({ ok: false, message: 'Missing meeting ID' });
+    if (!meetingSummary) {
+      logger.error({ event_id, payload: JSON.stringify(payload).substring(0, 200) }, 
+        'Failed to adapt Zoom payload; invalid or missing required fields');
+      return res.status(400).json({ ok: false, message: 'Invalid meeting data' });
     }
 
-    // Use meeting ID as idempotency key; combined with event_id for uniqueness
+    const { zoomMeetingId, title, hostEmail, attendeeCount, hasRecording, warnings } = meetingSummary;
+
+    // Create idempotency key from normalized data
     const idempotencyKey = `zoom:meeting:${zoomMeetingId}:${event_id}`;
 
     logger.info({
       zoomMeetingId,
-      event_id,
-      topic: meetingTopic,
-      duration,
-      hasRecording: recording.length > 0,
-      participantCount: participants.length,
-    }, 'Meeting summary completed event received');
+      title,
+      hostEmail,
+      attendeeCount,
+      hasRecording,
+      dataQualityWarnings: warnings.length,
+      eventId: event_id,
+    }, 'Meeting summary completed - payload adapted successfully');
 
     // Try to claim the idempotency key to ensure exactly-once processing
-    const claim = await idempotency.claimKey(idempotencyKey, event);
+    const claim = await idempotency.claimKey(idempotencyKey, meetingSummary);
 
     // If not claimed, this meeting is either already processed or being processed
     if (!claim.claimed) {
@@ -128,36 +128,37 @@ async function handleMeetingSummaryCompleted(event, res) {
         logger.info({
           zoomMeetingId,
           idempotencyKey,
-          topic: meetingTopic,
+          title,
+          attendeeCount,
         }, 'Processing meeting for extraction and delivery');
 
-        // TODO: Implement actual processing pipeline
-        // 1. Fetch recording metadata (if available)
-        // 2. Download/transcribe recording (if available)
-        // 3. Call Claude API for extraction (action items, summary, etc.)
-        // 4. Store results in database
-        // 5. Deliver summary to Slack
+        // TODO: Implement extraction/delivery pipeline
+        // Pass the normalized meetingSummary object to downstream handlers:
+        // - extractFromRecording(meetingSummary): transcribe, extract with Claude
+        // - persistToDatabase(meetingSummary): store in meetings table
+        // - deliverToSlack(meetingSummary): send summary to relevant channels
+        //
         // Example:
-        //   const extracted = await extractFromRecording({ zoomMeetingId, hostEmail, recording });
-        //   await db.query('UPDATE meetings SET summary = $1, ...');
-        //   await deliverToSlack({ summary: extracted.summary, attendees: participants });
+        //   const extracted = await extractFromRecording(meetingSummary);
+        //   await db.query('INSERT INTO meetings (...) VALUES (...)', [...]
+        //   await deliverToSlack(extracted);
 
         // Mark as done in idempotency store
         await idempotency.saveResponse(idempotencyKey, {
           ok: true,
           processed: true,
           zoomMeetingId,
-          message: 'Meeting queued for processing',
+          message: 'Meeting queued for extraction and delivery',
         });
 
-        logger.info({ zoomMeetingId, idempotencyKey }, 'Meeting processing queued successfully');
+        logger.info({ zoomMeetingId, idempotencyKey }, 'Meeting processing completed');
       } catch (err) {
         logger.error({
           err,
           zoomMeetingId,
           idempotencyKey,
           message: err.message,
-        }, 'Error processing meeting');
+        }, 'Error processing meeting in async handler');
 
         // Mark as failed in idempotency store so retries are allowed
         await idempotency.saveResponse(
