@@ -97,4 +97,34 @@ async function recordError(zoomMeetingId, message) {
   );
 }
 
-module.exports = { upsertFromWebhook, saveExtractionAndDigest, recordError };
+/**
+ * Look up a meeting row by its Zoom meeting ID. Returns just the columns
+ * the orchestrator needs to decide whether to deliver — keeps payload
+ * small and avoids surfacing raw_payload across the wire on every call.
+ *
+ * @param {string} zoomMeetingId
+ * @returns {Promise<object|null>}
+ */
+async function findByZoomId(zoomMeetingId) {
+  if (!zoomMeetingId) return null;
+
+  const result = await db.query(
+    `
+    SELECT id, zoom_id, host_email, digest_sent_at, digest_slack_ts, error, created_at, updated_at
+    FROM meetings
+    WHERE zoom_id = $1
+    LIMIT 1
+    `,
+    [zoomMeetingId],
+    { name: 'meetings_find_by_zoom_id' }
+  );
+
+  return result.rows[0] || null;
+}
+
+module.exports = {
+  upsertFromWebhook,
+  saveExtractionAndDigest,
+  recordError,
+  findByZoomId,
+};
