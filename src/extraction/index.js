@@ -5,8 +5,10 @@ async function extractFromRecording(recording) {
 
   if (!transcript.trim()) {
     throw new Error(
-      'extractFromRecording requires recording.transcript or recording.summary; ' +
-        'the upstream pipeline must transcribe the recording (e.g. via Zoom transcript API or Whisper) before extraction.'
+      'extractFromRecording requires recording.transcript or recording.summary. ' +
+        'For Zoom meetings, this is the AI Companion summary (summary_overview + ' +
+        'summary_details) assembled by the zoom-adapter. An empty value usually ' +
+        'means the meeting was not AI-summarized by Zoom.'
     );
   }
 

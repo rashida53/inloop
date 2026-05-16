@@ -374,8 +374,37 @@ function adaptZoomPayload(rawPayload, eventId) {
     rawPayload.recording_files || rawPayload.recordings
   );
 
-  // Extract optional summary fields (these would be populated by AI extraction later)
-  const summary = safeString(rawPayload.summary, '', 'summary');
+  // Assemble the meeting body for downstream extraction. Zoom AI Companion
+  // delivers two fields on meeting.summary_completed:
+  //   - summary_overview: a short narrative recap
+  //   - summary_details:  an array of { label, summary } sections (e.g.
+  //                       "Discussion", "Decisions", "Next steps")
+  //
+  // We concatenate them with section headers into a single text blob the
+  // extraction layer feeds to Claude. Falls back to a legacy `summary`
+  // field if neither AI Companion field is present, so the adapter still
+  // works against payloads from non-AI workspaces or test fixtures.
+  const summaryParts = [];
+  const summaryOverview = safeString(rawPayload.summary_overview, '', 'summary_overview');
+  if (summaryOverview) {
+    summaryParts.push(`Overview:\n${summaryOverview}`);
+  }
+  if (Array.isArray(rawPayload.summary_details)) {
+    for (const section of rawPayload.summary_details) {
+      const label = safeString(section?.label, 'Section', 'summary_section_label');
+      const content = safeString(section?.summary, '', 'summary_section_content');
+      if (content) {
+        summaryParts.push(`${label}:\n${content}`);
+      }
+    }
+  }
+  if (!summaryParts.length) {
+    const legacySummary = safeString(rawPayload.summary, '', 'summary');
+    if (legacySummary) {
+      summaryParts.push(legacySummary);
+    }
+  }
+  const summary = summaryParts.join('\n\n');
   const keyPoints = Array.isArray(rawPayload.key_points)
     ? rawPayload.key_points.map(p => safeString(p))
     : [];
