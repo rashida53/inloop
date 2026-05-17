@@ -39,8 +39,13 @@ function endStage(timer, metrics) {
   return duration;
 }
 
-async function processMeeting(rawEvent) {
-  const correlationId = uuidv4();
+async function processMeeting(rawEvent, { correlationId: providedCorrelationId } = {}) {
+  // Prefer an upstream-provided correlation ID (HTTP request ID from
+  // pino-http via the correlationId middleware) so the synchronous webhook
+  // logs and the async pipeline logs share one trace ID. Fall back to a
+  // generated UUID when invoked outside an HTTP context (e.g., a future
+  // queue worker, a backfill script, or a test).
+  const correlationId = providedCorrelationId || uuidv4();
   const log = logger.child({ correlationId, eventId: rawEvent?.event_id });
   const metrics = {};
 

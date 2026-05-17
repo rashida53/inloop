@@ -48,19 +48,21 @@ function handleUrlValidation(event, res) {
  * The .catch() below is a safety net for programmer bugs that escape
  * its top-level try/catch — it should never fire in normal operation.
  */
-function handleMeetingSummaryCompleted(event, res) {
+function handleMeetingSummaryCompleted(event, res, correlationId) {
   const eventId = event.event_id;
   const zoomMeetingId = event.object?.id || event.object?.meeting_id || null;
 
   logger.info(
-    { eventId, zoomMeetingId },
+    { eventId, zoomMeetingId, correlationId },
     'Accepted meeting.summary_completed; dispatching to orchestrator'
   );
 
+  // Hand the HTTP correlation ID down to the background pipeline so its
+  // logs are joined to the synchronous response under one trace ID.
   setImmediate(() => {
-    processMeeting(event).catch((err) => {
+    processMeeting(event, { correlationId }).catch((err) => {
       logger.error(
-        { err, eventId, zoomMeetingId },
+        { err, eventId, zoomMeetingId, correlationId },
         'processMeeting threw unexpectedly (programmer bug — should return envelope)'
       );
     });
@@ -69,6 +71,7 @@ function handleMeetingSummaryCompleted(event, res) {
   return res.status(202).json({
     ok: true,
     eventId,
+    correlationId,
     acceptedAt: new Date().toISOString(),
   });
 }
@@ -99,7 +102,7 @@ router.post('/', async (req, res, next) => {
         return handleUrlValidation(event, res);
 
       case 'meeting.summary_completed':
-        return handleMeetingSummaryCompleted(event, res);
+        return handleMeetingSummaryCompleted(event, res, req.correlationId);
 
       default:
         logger.debug({ eventType }, 'Unhandled Zoom event type; returning 202');

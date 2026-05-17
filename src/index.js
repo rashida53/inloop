@@ -1,21 +1,25 @@
 require('dotenv').config();
 require('express-async-errors');
 const express = require('express');
-const morgan = require('morgan');
-const pinoHttp = require('pino-http');
 const config = require('./config');
 const logger = require('./utils/logger');
 const db = require('./db');
 const healthRoutes = require('./routes/health');
+const readyRoutes = require('./routes/ready');
 const zoomWebhooks = require('./webhooks/zoom');
 const { captureRawBody, createZoomSignatureVerification } = require('./webhooks/verify');
 const errorHandler = require('./middleware/errorHandler');
+const requestLogger = require('./middleware/requestLogger');
+const correlationId = require('./middleware/correlationId');
 
 const app = express();
 
 // Global middleware
-app.use(morgan('combined'));
-app.use(pinoHttp({ logger }));
+// pino-http request logger (provides req.log, req.id and response timing)
+app.use(requestLogger);
+
+// Attach correlationId to req and bind into req.log
+app.use(correlationId);
 
 // Zoom webhook route: must capture raw body BEFORE JSON parsing
 app.post(
@@ -30,6 +34,7 @@ app.post(
 app.use(express.json({ limit: '1mb' }));
 
 app.use('/health', healthRoutes);
+app.use('/ready', readyRoutes);
 
 app.use((req, res) => res.status(404).json({ ok: false, message: 'Not Found' }));
 app.use(errorHandler);
@@ -54,3 +59,15 @@ const gracefulShutdown = async (signal) => {
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// Uncaught exceptions and unhandled rejections
+process.on('uncaughtException', (err) => {
+  logger.fatal({ err }, 'Uncaught exception — initiating graceful shutdown');
+  // Initiate graceful shutdown but do not call process.exit directly
+  gracefulShutdown('uncaughtException');
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error({ reason, promise }, 'Unhandled promise rejection');
+  // Do not exit the process here; allow the app to continue running.
+});
