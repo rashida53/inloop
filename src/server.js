@@ -1,5 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const logger = require('./utils/logger');
+const config = require('./config');
 const idempotency = require('./db/idempotency');
 const meetings = require('./db/meetings');
 const userDirectory = require('./users');
@@ -72,6 +73,36 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
     }
 
     log.info({ zoomMeetingId: meetingSummary.zoomMeetingId }, 'Meeting payload adapted');
+
+    // MVP cohort gate: only meetings whose host email is on the
+    // ALLOWED_HOST_EMAILS list get processed. Empty list (default) means
+    // no gate is active — process every meeting. Filtering here, before
+    // the idempotency claim and any expensive work, avoids spending
+    // Claude tokens, Slack API calls, or DB writes on meetings outside
+    // the cohort.
+    if (config.allowedHostEmails.size > 0) {
+      const hostEmailLower = (meetingSummary.hostEmail || '').toLowerCase();
+      if (!config.allowedHostEmails.has(hostEmailLower)) {
+        log.info(
+          {
+            hostEmail: meetingSummary.hostEmail,
+            zoomMeetingId: meetingSummary.zoomMeetingId,
+            allowlistSize: config.allowedHostEmails.size,
+          },
+          'Pipeline skipped: host not in ALLOWED_HOST_EMAILS allowlist'
+        );
+        return {
+          correlationId,
+          eventId: rawEvent.event_id,
+          ok: true,
+          skipped: true,
+          reason: 'host_not_in_allowlist',
+          hostEmail: meetingSummary.hostEmail,
+          zoomMeetingId: meetingSummary.zoomMeetingId,
+          metrics,
+        };
+      }
+    }
 
     idempotencyKey = `zoom:meeting:${meetingSummary.zoomMeetingId}:${rawEvent.event_id}`;
     const claim = await idempotency.claimKey(idempotencyKey, rawEvent);

@@ -32,6 +32,7 @@ jest.mock('../../src/integrations/slack', () => {
 
 const { Anthropic } = require('@anthropic-ai/sdk');
 const slackMock = require('../../src/integrations/slack').__mocks;
+const config = require('../../src/config');
 const { processMeeting } = require('../../src/server');
 
 const zoomFixtures = require('../fixtures/zoom');
@@ -63,6 +64,8 @@ beforeEach(() => {
   dbHandle.reset();
   Anthropic.__create.mockReset();
   Object.values(slackMock).forEach((m) => m.mockReset());
+  // Reset the MVP allowlist between tests — default is "no gate".
+  config.allowedHostEmails = new Set();
 });
 
 describe('processMeeting — happy path', () => {
@@ -208,6 +211,61 @@ describe('processMeeting — external host (no Slack identity)', () => {
     // even when nobody is DM'd
     expect(Anthropic.__create).toHaveBeenCalledTimes(1);
     expect(dbHandle.findQueryCalls('meetings_save_extraction_and_digest')).toHaveLength(1);
+  });
+});
+
+describe('processMeeting — MVP allowlist gate', () => {
+  test('skips entirely when host email is not in ALLOWED_HOST_EMAILS', async () => {
+    config.allowedHostEmails = new Set(['someone-else@inmarket.com']);
+
+    const event = zoomFixtures.meetingSummaryCompleted(); // host = alice@inmarket.com
+    const result = await processMeeting(event);
+
+    expect(result).toMatchObject({
+      ok: true,
+      skipped: true,
+      reason: 'host_not_in_allowlist',
+      hostEmail: 'alice@inmarket.com',
+    });
+
+    // Critically: nothing downstream of the filter should have run
+    expect(dbHandle.findQueryCalls('idempotency_claim')).toHaveLength(0);
+    expect(dbHandle.findQueryCalls('meetings_upsert_from_webhook')).toHaveLength(0);
+    expect(Anthropic.__create).not.toHaveBeenCalled();
+    expect(slackMock.chatPostMessage).not.toHaveBeenCalled();
+  });
+
+  test('processes normally when host email is in the allowlist (case-insensitive match)', async () => {
+    config.allowedHostEmails = new Set(['alice@inmarket.com']);
+
+    dbHandle.mockQueryByName(happyPathDbResponses());
+    Anthropic.__create.mockResolvedValueOnce(claudeFixtures.messagesCreateSuccess);
+    slackMock.conversationsOpen.mockResolvedValueOnce(slackFixtures.conversationsOpenSuccess);
+    slackMock.chatPostMessage.mockResolvedValueOnce(slackFixtures.chatPostMessageSuccess);
+
+    // Mixed-case email on the incoming event must still match the lower-case set entry
+    const event = zoomFixtures.meetingSummaryCompleted({
+      object: { host_email: 'Alice@InMarket.com' },
+    });
+    const result = await processMeeting(event);
+
+    expect(result).toMatchObject({ ok: true, delivered: true });
+    expect(result.skipped).toBeUndefined();
+    expect(Anthropic.__create).toHaveBeenCalledTimes(1);
+  });
+
+  test('processes every meeting when the allowlist is empty (default — no gate)', async () => {
+    // allowedHostEmails is already empty from beforeEach
+    dbHandle.mockQueryByName(happyPathDbResponses());
+    Anthropic.__create.mockResolvedValueOnce(claudeFixtures.messagesCreateSuccess);
+    slackMock.conversationsOpen.mockResolvedValueOnce(slackFixtures.conversationsOpenSuccess);
+    slackMock.chatPostMessage.mockResolvedValueOnce(slackFixtures.chatPostMessageSuccess);
+
+    const event = zoomFixtures.meetingSummaryCompleted();
+    const result = await processMeeting(event);
+
+    expect(result.skipped).toBeUndefined();
+    expect(result.delivered).toBe(true);
   });
 });
 
