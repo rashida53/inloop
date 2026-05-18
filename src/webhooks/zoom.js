@@ -1,6 +1,8 @@
+const crypto = require('crypto');
 const express = require('express');
 const router = express.Router();
 const logger = require('../utils/logger');
+const config = require('../config');
 const { processMeeting } = require('../server');
 
 /**
@@ -18,20 +20,44 @@ const { processMeeting } = require('../server');
  * orchestrator is the boundary for all real processing logic.
  */
 
+/**
+ * Zoom Webhook Only apps use CRC validation: Zoom POSTs a plainToken and
+ * expects back { plainToken, encryptedToken } where encryptedToken is
+ * HMAC-SHA256(plainToken, secret_token) hex-encoded. The HMAC is computed
+ * against ZOOM_VERIFICATION_TOKEN — the same secret Zoom uses to sign
+ * regular events.
+ *
+ * Legacy fields (`validationToken` and top-level `challenge`) are accepted
+ * as a fallback for older app shapes / tests that haven't migrated.
+ */
 function handleUrlValidation(event, res) {
   try {
-    const challenge = event.payload?.validationToken || event.challenge;
-    if (!challenge) {
-      logger.warn({ event }, 'url_validation event missing challenge or validationToken');
-      return res.status(400).json({ ok: false, message: 'Missing challenge' });
+    const plainToken =
+      event.payload?.plainToken ||
+      event.payload?.validationToken ||
+      event.challenge;
+
+    if (!plainToken) {
+      logger.warn({ event }, 'url_validation event missing plainToken / validationToken');
+      return res.status(400).json({ ok: false, message: 'Missing challenge token' });
     }
 
+    if (!config.zoomVerificationToken) {
+      logger.error('ZOOM_VERIFICATION_TOKEN is not configured; cannot complete CRC');
+      return res.status(500).json({ ok: false, message: 'Server misconfiguration' });
+    }
+
+    const encryptedToken = crypto
+      .createHmac('sha256', config.zoomVerificationToken)
+      .update(plainToken)
+      .digest('hex');
+
     logger.info(
-      { challenge: challenge.substring(0, 10) },
-      'Zoom endpoint validation challenge received'
+      { plainTokenPrefix: plainToken.substring(0, 10) },
+      'Zoom endpoint validation: responding with CRC'
     );
 
-    return res.status(200).json({ plainTextToken: challenge });
+    return res.status(200).json({ plainToken, encryptedToken });
   } catch (err) {
     logger.error({ err, event }, 'Error handling url_validation');
     return res.status(500).json({ ok: false, message: 'Internal error' });

@@ -21,11 +21,15 @@ app.use(requestLogger);
 // Attach correlationId to req and bind into req.log
 app.use(correlationId);
 
-// Zoom webhook route: must capture raw body BEFORE JSON parsing
-app.post(
+// Zoom webhook route. captureRawBody parses JSON AND exposes req.rawBody
+// for HMAC signature verification in a single body-parser pass. The router
+// itself only registers POST, so non-POST methods fall through to the 404
+// handler — `app.use` is correct here despite accepting all methods, because
+// it provides the path-stripping `zoomWebhooks` needs to match its `'/'`
+// route. Method restriction is enforced inside the router.
+app.use(
   '/webhooks/zoom',
   captureRawBody,
-  express.json({ limit: '1mb' }),
   createZoomSignatureVerification(config.zoomVerificationToken),
   zoomWebhooks
 );

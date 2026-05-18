@@ -111,25 +111,30 @@ function validateTimestamp(requestTimestamp, maxAgeSeconds = 300) {
 }
 
 /**
- * Middleware to capture raw body for Zoom signature verification.
- * Must be placed BEFORE express.json() to capture the raw request stream.
- * Attaches req.rawBody (as Buffer) for downstream use.
+ * JSON-parsing middleware that also exposes the raw body as `req.rawBody`.
  *
- * Usage:
- *   app.post('/webhooks/zoom', captureRawBody, zoomSignatureVerification, handleZoomWebhook);
+ * Uses body-parser's `verify` callback to grab the raw bytes during the
+ * single parse pass — both `req.body` (parsed) and `req.rawBody` (Buffer)
+ * are populated for downstream signature verification.
  *
- * @returns {function} - Express middleware
+ * This replaces the prior implementation that attached its own `data`
+ * listener; that approach consumed the request stream before
+ * `express.json()` could read it, producing `stream is not readable`
+ * on every webhook.
+ *
+ * Usage (in index.js):
+ *   app.post('/webhooks/zoom', captureRawBody, signatureVerifier, zoomRouter);
+ *
+ * (No separate `express.json()` needed in the chain — this middleware
+ * does both raw capture and JSON parsing.)
  */
-function captureRawBody(req, res, next) {
-  req.rawBody = Buffer.alloc(0);
-
-  req.on('data', (chunk) => {
-    req.rawBody = Buffer.concat([req.rawBody, chunk]);
-  });
-
-  req.on('end', next);
-  req.on('error', next);
-}
+const express = require('express');
+const captureRawBody = express.json({
+  limit: '1mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  },
+});
 
 /**
  * Middleware factory for Zoom webhook signature verification.
@@ -147,6 +152,17 @@ function createZoomSignatureVerification(secret, maxAgeSeconds = 300) {
   return (req, res, next) => {
     try {
       const event = req.body || {};
+
+      // Endpoint URL validation uses CRC (challenge-response over HMAC of a
+      // server-supplied plainToken) instead of the X-Zoom-Signature header
+      // mechanism that signs regular events. Skip header signature checks
+      // here and let the url_validation handler in zoom.js perform its own
+      // HMAC computation against the secret.
+      if (event.event === 'endpoint.url_validation') {
+        logger.debug('Bypassing signature verification for endpoint.url_validation (handler does its own CRC)');
+        return next();
+      }
+
       const timestamp = event.timestamp;
       const signature = req.get('X-Zoom-Signature');
       const rawBody = req.rawBody;
