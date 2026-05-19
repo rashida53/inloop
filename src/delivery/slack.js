@@ -65,13 +65,57 @@ function buildListSection(title, items, maxItems = 5) {
 }
 
 /**
- * Build Slack Block Kit blocks from a normalized MeetingSummary (adapter output)
- * and the extracted intelligence (claude.js output).
+ * Public entry point. Dispatches to a per-meeting-type renderer based on
+ * intelligence.meetingType (set by the Claude extraction classifier).
  *
- * @param {object} meetingSummary - The normalized output of adaptZoomPayload.
- * @param {object} intelligence   - { followUpEmail, salesforceNotes } from extractMeetingIntelligence.
+ * For now, every type renderer delegates to buildDefaultBlocks — no
+ * observable behavior change. Per-type rendering (Highspot deck injection
+ * for inmarket_overview, computed timeline for rfp_review, blockers/asks
+ * highlight for internal) gets filled in incrementally as sales-lead
+ * requirements are confirmed.
  */
 function buildBlocks(meetingSummary, intelligence) {
+  const type = intelligence?.meetingType || 'other';
+  switch (type) {
+    case 'inmarket_overview':
+      return buildOverviewBlocks(meetingSummary, intelligence);
+    case 'rfp_review':
+      return buildRfpBlocks(meetingSummary, intelligence);
+    case 'internal':
+      return buildInternalBlocks(meetingSummary, intelligence);
+    default:
+      return buildDefaultBlocks(meetingSummary, intelligence);
+  }
+}
+
+// Per-type renderers. Today each is a pass-through to the default renderer;
+// they exist as named slots so per-type work lands here without touching
+// the dispatcher.
+
+function buildOverviewBlocks(meetingSummary, intelligence) {
+  // TODO: inject Highspot deck URL into follow-up email body;
+  //       add "AM Handoff" section using intelligence.amHandoffItems.
+  return buildDefaultBlocks(meetingSummary, intelligence);
+}
+
+function buildRfpBlocks(meetingSummary, intelligence) {
+  // TODO: render computed timeline backwards from intelligence.campaignLaunchDate
+  //       using a configured milestone schedule.
+  return buildDefaultBlocks(meetingSummary, intelligence);
+}
+
+function buildInternalBlocks(meetingSummary, intelligence) {
+  // TODO: highlight setupBlockers up top; render audienceRequests + materialsNeeded;
+  //       consider skipping the follow-up-email section entirely.
+  return buildDefaultBlocks(meetingSummary, intelligence);
+}
+
+/**
+ * Default Block Kit renderer — pre-typing behavior, used for `other` and
+ * (currently) every other meeting type. Reads from a normalized MeetingSummary
+ * (adapter output) and the extracted intelligence (claude.js output).
+ */
+function buildDefaultBlocks(meetingSummary, intelligence) {
   const { followUpEmail, salesforceNotes } = intelligence;
   const attendees = Array.isArray(meetingSummary.attendees) ? meetingSummary.attendees : [];
 

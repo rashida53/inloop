@@ -64,15 +64,21 @@ async function saveExtractionAndDigest(zoomMeetingId, intelligence, delivery) {
     UPDATE meetings
     SET summary = $1,
         next_steps = $2,
-        digest_sent_at = $3,
-        digest_slack_ts = $4,
+        intelligence = $3::jsonb,
+        digest_sent_at = $4,
+        digest_slack_ts = $5,
         error = NULL,
         updated_at = NOW()
-    WHERE zoom_id = $5
+    WHERE zoom_id = $6
     `,
     [
       notes.notesSummary || null,
       nextStepsText,
+      // Persist the full Claude output so per-type rendering, search, themes,
+      // and brag-doc features can query without re-running extraction.
+      // The column comes from migration 003 — until that migration is run on
+      // the target database, this query will error.
+      JSON.stringify(intelligence),
       delivery?.ts ? new Date() : null,
       delivery?.ts || null,
       zoomMeetingId,

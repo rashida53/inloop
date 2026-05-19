@@ -9,9 +9,17 @@ const TRANSCRIPT_MAX_CHARS = parseInt(process.env.CLAUDE_TRANSCRIPT_MAX_CHARS ||
 
 const client = new Anthropic({ apiKey: config.claudeApiKey });
 
+const MEETING_TYPES = ['inmarket_overview', 'rfp_review', 'internal', 'other'];
+
 const extractionSchema = {
   type: 'object',
   properties: {
+    meetingType: {
+      type: 'string',
+      enum: MEETING_TYPES,
+      description:
+        'Discriminator used by downstream rendering. See system prompt for taxonomy.',
+    },
     followUpEmail: {
       type: 'object',
       properties: {
@@ -56,13 +64,32 @@ const extractionSchema = {
       additionalProperties: false,
     },
   },
-  required: ['followUpEmail', 'salesforceNotes'],
+  required: ['meetingType', 'followUpEmail', 'salesforceNotes'],
   additionalProperties: false,
 };
 
-const SYSTEM_PROMPT = `You are a concise, sales-focused B2B SaaS meeting intelligence assistant for a revenue operations team.
+const SYSTEM_PROMPT = `You are a concise, sales-focused B2B SaaS meeting intelligence assistant for InMarket's revenue operations team.
 
-For each meeting you process, return two artifacts:
+First, classify the meeting into one of these types using the meetingType field:
+
+- "inmarket_overview" — An introductory meeting with a new client or agency
+  prospect. The meeting is centered on presenting InMarket's products, capabilities,
+  or value proposition to people unfamiliar with us. External attendees from a
+  company that appears to be a first-touch prospect.
+
+- "rfp_review" — A meeting reviewing an RFP, proposal, or campaign specifics
+  with an existing prospect or client. Signals: explicit mention of "RFP" or
+  "proposal", a specific campaign being scoped, discussion of a campaign launch
+  date, asset/creative review, or pricing for a defined opportunity.
+
+- "internal" — A meeting with InMarket employees only (every attendee email
+  ends in @inmarket.com). Topics typically include campaign setup, pre-sales
+  material requests, audience reach planning, or operational coordination.
+
+- "other" — Anything that doesn't clearly fit the above three. When uncertain,
+  use "other" rather than guessing.
+
+Then, for every meeting you process, return two artifacts:
 
 1. followUpEmail — a clean, actionable follow-up email containing:
    - subject: a short, specific subject line

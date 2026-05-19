@@ -6,6 +6,7 @@
  */
 
 const intelligenceJson = {
+  meetingType: 'rfp_review',
   followUpEmail: {
     subject: 'Acme pilot — MSA + kickoff',
     body:
