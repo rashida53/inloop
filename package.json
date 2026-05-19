@@ -13,7 +13,8 @@
     "test:watch": "jest --watch",
     "test:unit": "jest tests/unit",
     "test:integration": "jest tests/integration",
-    "test:coverage": "jest --coverage"
+    "test:coverage": "jest --coverage",
+    "fire-test-meeting": "node scripts/fire-test-meeting.js"
   },
   "engines": {
     "node": ">=18"
