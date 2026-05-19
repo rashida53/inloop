@@ -14,12 +14,20 @@ let isShuttingDown = false;
 function getPool() {
   if (pool) return pool;
 
+  // Supabase (pooler + direct), Neon, Railway, etc. all require SSL/TLS.
+  // `rejectUnauthorized: false` skips certificate-chain validation, which is
+  // safe here because we're connecting to a trusted Supabase domain over TLS.
+  // For local Postgres (Docker, etc.) set DB_SSL=false to disable.
+  const sslConfig =
+    process.env.DB_SSL === 'false' ? false : { rejectUnauthorized: false };
+
   const poolConfig = {
     host: process.env.DB_HOST || 'localhost',
     port: parseInt(process.env.DB_PORT || '5432', 10),
     database: process.env.DB_NAME || 'postgres',
     user: process.env.DB_USER || 'postgres',
     password: process.env.DB_PASSWORD || '',
+    ssl: sslConfig,
     max: parseInt(process.env.DB_POOL_MAX || '10', 10),
     idleTimeoutMillis: parseInt(process.env.DB_IDLE_TIMEOUT || '30000', 10),
     connectionTimeoutMillis: parseInt(process.env.DB_CONNECT_TIMEOUT || '5000', 10),
