@@ -63,8 +63,45 @@ const extractionSchema = {
       ],
       additionalProperties: false,
     },
+
+    // Type-specific fields. ALL are required by schema, but Claude populates
+    // only the ones matching meetingType — others are empty strings/arrays.
+    // The delivery layer's per-type renderers read the relevant fields.
+
+    // For meetingType === 'inmarket_overview'
+    customerProfile: {
+      type: 'object',
+      properties: {
+        industry: { type: 'string' },
+        companySize: { type: 'string' },
+        stakeholders: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['industry', 'companySize', 'stakeholders'],
+      additionalProperties: false,
+    },
+    amHandoffItems: { type: 'array', items: { type: 'string' } },
+
+    // For meetingType === 'rfp_review'
+    // Format: ISO-8601 date string (YYYY-MM-DD), or empty string if undiscussed.
+    // The orchestrator's renderer computes timeline milestones backwards from this.
+    campaignLaunchDate: { type: 'string' },
+
+    // For meetingType === 'internal'
+    setupBlockers: { type: 'array', items: { type: 'string' } },
+    audienceRequests: { type: 'array', items: { type: 'string' } },
+    materialsNeeded: { type: 'array', items: { type: 'string' } },
   },
-  required: ['meetingType', 'followUpEmail', 'salesforceNotes'],
+  required: [
+    'meetingType',
+    'followUpEmail',
+    'salesforceNotes',
+    'customerProfile',
+    'amHandoffItems',
+    'campaignLaunchDate',
+    'setupBlockers',
+    'audienceRequests',
+    'materialsNeeded',
+  ],
   additionalProperties: false,
 };
 
@@ -88,6 +125,30 @@ First, classify the meeting into one of these types using the meetingType field:
 
 - "other" — Anything that doesn't clearly fit the above three. When uncertain,
   use "other" rather than guessing.
+
+Type-specific fields to populate based on the meetingType you chose:
+
+For "inmarket_overview":
+- customerProfile: { industry, companySize, stakeholders[] } — best-effort
+  from what's said about the customer
+- amHandoffItems: 3-5 concrete items the Account Manager needs to action to
+  move this into the RFP intake process (e.g. "schedule kickoff call with
+  customer ops contact", "confirm budget cycle with finance")
+
+For "rfp_review":
+- campaignLaunchDate: ISO-8601 date (YYYY-MM-DD) if a campaign launch date
+  was discussed and confirmed; empty string if not yet decided
+
+For "internal":
+- setupBlockers: open items blocking campaign setup
+- audienceRequests: audience-reach asks made during the call (e.g. "need
+  audience size estimates for QSR vertical in Atlanta DMA")
+- materialsNeeded: pre-sales decks, one-pagers, case studies requested
+
+For any field that doesn't apply to the chosen meetingType, return an
+empty string (for string fields) or empty array (for array fields). Do
+not invent data. customerProfile object fields can be empty strings if
+not discussed.
 
 Then, for every meeting you process, return two artifacts:
 

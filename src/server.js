@@ -180,6 +180,44 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
       );
     }
 
+    // Testing CC: send the same digest to each DIGEST_SHADOW_RECIPIENTS email,
+    // skipping anyone whose email matches the host's (to avoid double-DM).
+    // Failures are logged but never fail the pipeline — this is observability
+    // scaffolding, not part of the production guarantee.
+    if (config.digestShadowRecipients.size > 0) {
+      const hostEmailLower = (meetingSummary.hostEmail || '').toLowerCase();
+      const shadowTargets = Array.from(config.digestShadowRecipients).filter(
+        (email) => email !== hostEmailLower
+      );
+
+      for (const shadowEmail of shadowTargets) {
+        try {
+          const shadowUser = await userDirectory.findByEmail(shadowEmail);
+          if (!shadowUser?.slack_id) {
+            log.warn(
+              { shadowEmail },
+              'Shadow recipient has no Slack ID; skipping shadow DM'
+            );
+            continue;
+          }
+          const shadowDelivery = await deliverToSlack({
+            meetingSummary,
+            intelligence,
+            target: { userId: shadowUser.slack_id },
+          });
+          log.info(
+            { shadowEmail, shadowDigestTs: shadowDelivery?.ts },
+            'Shadow digest delivered'
+          );
+        } catch (shadowErr) {
+          log.warn(
+            { err: shadowErr, shadowEmail },
+            'Shadow digest delivery failed (best-effort, not retried)'
+          );
+        }
+      }
+    }
+
     const updateTimer = startStage('updateMeetingDeliveryStatus');
     await meetings.saveExtractionAndDigest(meetingSummary.zoomMeetingId, intelligence, delivery);
     endStage(updateTimer, metrics);

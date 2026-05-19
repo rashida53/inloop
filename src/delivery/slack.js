@@ -2,6 +2,8 @@ const config = require('../config');
 const logger = require('../utils/logger');
 const { slackClient } = require('../integrations/slack');
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 const MAX_RETRIES = 3;
 const BASE_RETRY_DELAY_MS = 500;
 const MAX_SECTION_TEXT = 1200;
@@ -92,22 +94,157 @@ function buildBlocks(meetingSummary, intelligence) {
 // they exist as named slots so per-type work lands here without touching
 // the dispatcher.
 
+/**
+ * Inmarket Overview digest. First-touch meetings with new prospects.
+ * Builds the standard digest but augments the follow-up email body with
+ * the canonical Highspot deck link, and appends an AM Handoff section
+ * with the specific items the AM needs to file the RFP intake.
+ */
 function buildOverviewBlocks(meetingSummary, intelligence) {
-  // TODO: inject Highspot deck URL into follow-up email body;
-  //       add "AM Handoff" section using intelligence.amHandoffItems.
-  return buildDefaultBlocks(meetingSummary, intelligence);
+  const augmented = {
+    ...intelligence,
+    followUpEmail: {
+      ...intelligence.followUpEmail,
+      body: appendHighspotIfConfigured(intelligence.followUpEmail?.body || ''),
+    },
+  };
+
+  const blocks = buildDefaultBlocks(meetingSummary, augmented);
+
+  const handoff = intelligence.amHandoffItems;
+  if (Array.isArray(handoff) && handoff.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push(buildListSection('AM Handoff', handoff, 6));
+  }
+
+  return blocks;
 }
 
+function appendHighspotIfConfigured(body) {
+  const url = (config.inmarketOverviewHighspotUrl || '').trim();
+  if (!url) return body;
+  const prefix = body && body.trim() ? `${body}\n\n` : '';
+  return `${prefix}Here's the deck we walked through: ${url}`;
+}
+
+/**
+ * RFP Review digest. Builds the standard digest but inserts a computed
+ * timeline section with milestones derived backwards from the campaign
+ * launch date Claude extracted. Skipped silently if Claude didn't capture
+ * a launch date or it doesn't parse.
+ */
 function buildRfpBlocks(meetingSummary, intelligence) {
-  // TODO: render computed timeline backwards from intelligence.campaignLaunchDate
-  //       using a configured milestone schedule.
-  return buildDefaultBlocks(meetingSummary, intelligence);
+  const blocks = buildDefaultBlocks(meetingSummary, intelligence);
+  const timelineBlocks = buildTimelineBlocks(intelligence.campaignLaunchDate);
+  if (timelineBlocks) {
+    blocks.push({ type: 'divider' });
+    blocks.push(...timelineBlocks);
+  }
+  return blocks;
 }
 
+function buildTimelineBlocks(launchDateStr) {
+  if (!launchDateStr || typeof launchDateStr !== 'string' || !launchDateStr.trim()) {
+    return null;
+  }
+  const launchDate = new Date(launchDateStr);
+  if (Number.isNaN(launchDate.getTime())) return null;
+
+  const milestones = (config.rfpTimelineMilestones || [])
+    .map((m) => ({
+      name: m.name,
+      date: new Date(launchDate.getTime() - m.daysBeforeLaunch * DAY_MS),
+    }))
+    .sort((a, b) => a.date - b.date);
+
+  if (milestones.length === 0) return null;
+
+  const lines = milestones
+    .map((m) => `• *${m.date.toISOString().slice(0, 10)}* — ${m.name}`)
+    .join('\n');
+
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Campaign timeline (launch ${launchDate.toISOString().slice(0, 10)}):*\n${lines}`,
+      },
+    },
+  ];
+}
+
+/**
+ * Internal meeting digest. Custom structure tailored to operational
+ * meetings: blockers up top, then audience/materials asks, then a brief
+ * summary. Skips the salesforce/follow-up-email sections that aren't
+ * relevant when the meeting was internal-only.
+ */
 function buildInternalBlocks(meetingSummary, intelligence) {
-  // TODO: highlight setupBlockers up top; render audienceRequests + materialsNeeded;
-  //       consider skipping the follow-up-email section entirely.
-  return buildDefaultBlocks(meetingSummary, intelligence);
+  const attendees = Array.isArray(meetingSummary.attendees) ? meetingSummary.attendees : [];
+  const blockers = intelligence.setupBlockers;
+  const audienceRequests = intelligence.audienceRequests;
+  const materialsNeeded = intelligence.materialsNeeded;
+  const notes = intelligence.salesforceNotes || {};
+
+  const blocks = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: 'Internal meeting digest', emoji: true },
+    },
+    {
+      type: 'section',
+      fields: [
+        buildField('Meeting', meetingSummary.title),
+        buildField('Date', formatMeetingDate(meetingSummary.startTime)),
+      ],
+    },
+  ];
+
+  if (attendees.length) {
+    const lines = attendees
+      .slice(0, 8)
+      .map((attendee) => `• ${truncateText(formatAttendee(attendee), 120)}`)
+      .join('\n');
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Attendees:*\n${lines}` },
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
+  // Blockers most important — render first even if empty (acts as audit signal).
+  blocks.push(buildListSection('🚧 Setup blockers', blockers, 5));
+  blocks.push(buildListSection('Audience requests', audienceRequests, 5));
+  blocks.push(buildListSection('Pre-sales materials needed', materialsNeeded, 5));
+
+  if (Array.isArray(notes.nextSteps) && notes.nextSteps.length > 0) {
+    blocks.push({ type: 'divider' });
+    blocks.push(buildListSection('Next steps', notes.nextSteps, 5));
+  }
+
+  if (notes.notesSummary) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Summary:*\n${truncateText(notes.notesSummary, MAX_SECTION_TEXT)}`,
+      },
+    });
+  }
+
+  if (blocks.length > MAX_BLOCKS) {
+    return blocks.slice(0, MAX_BLOCKS - 1).concat({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '_Additional details removed to keep Slack mobile-friendly._',
+      },
+    });
+  }
+
+  return blocks;
 }
 
 /**

@@ -14,6 +14,15 @@ const intelligenceJson = {
     recipients: ['bob@acme.com'],
     contextSummary: 'Acme is doing a 90-day pilot at $50k. Decision-making moves to procurement Monday.',
   },
+  // Type-specific fields. The fixture's meetingType is "rfp_review", so the
+  // RFP fields are populated and the inmarket_overview / internal fields
+  // are empty arrays/strings — same shape Claude produces in production.
+  customerProfile: { industry: '', companySize: '', stakeholders: [] },
+  amHandoffItems: [],
+  campaignLaunchDate: '2026-08-15',
+  setupBlockers: [],
+  audienceRequests: [],
+  materialsNeeded: [],
   salesforceNotes: {
     dealStage: 'Pilot Agreed',
     opportunityName: 'Acme — Analytics Pilot',
