@@ -55,8 +55,11 @@ const event = {
       { name: 'Bob Customer', user_email: 'bob@acme-test.com' },
       { name: 'Carol Buyer', user_email: 'carol@acme-test.com' },
     ],
+    // Explicit RFP review content with a concrete campaign launch date so
+    // Claude reliably classifies as "rfp_review" AND extracts a launch date
+    // for the timeline renderer to compute milestones from.
     summary_overview:
-      'Test Host walked Bob and Carol from Acme through the InLoop SaaS pilot proposal. Bob raised concerns about pricing tiers and procurement timeline; Carol was supportive but emphasized the need for SOC 2 Type II attestation before signing. Agreed on a 90-day pilot at $50k contingent on SOC 2 documentation delivery.',
+      'RFP review call: Test Host walked Bob and Carol from Acme through the InLoop SaaS RFP response and proposed campaign plan. Confirmed campaign launch date of 2026-08-15. Bob raised concerns about pricing tiers; Carol emphasized SOC 2 Type II attestation. Aligned on a 90-day pilot at $50k contingent on SOC 2 documentation delivery, with the campaign going live on August 15, 2026.',
     summary_details: [
       {
         label: 'Discussion',
@@ -66,7 +69,12 @@ const event = {
       {
         label: 'Decisions',
         summary:
-          'Pilot agreed at $50k for 90 days, scoped to the analytics module only. MSA to follow standard InLoop template. Pilot kickoff is blocked on SOC 2 docs being shared.',
+          'Pilot agreed at $50k for 90 days, scoped to the analytics module only. Campaign go-live confirmed for August 15, 2026 (2026-08-15). MSA to follow standard InLoop template. Pilot kickoff is blocked on SOC 2 docs being shared.',
+      },
+      {
+        label: 'Campaign Timing',
+        summary:
+          'Campaign launch date confirmed: 2026-08-15. Acme requires final creative and copy locked at least two weeks before launch, with QA window leading into go-live.',
       },
       {
         label: 'Next Steps',
