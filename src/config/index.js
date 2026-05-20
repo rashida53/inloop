@@ -16,6 +16,43 @@ function parseEmailSet(raw) {
   );
 }
 
+/**
+ * Parse the DIGEST_HOST_CC_MAP env var into a Map<hostEmail, Set<ccEmail>>.
+ * Both keys and values are normalized (trim + lowercase). Invalid JSON,
+ * non-object values, or non-array CC lists are treated as empty (logged
+ * silently — config errors shouldn't crash the process at boot).
+ *
+ * Expected shape:
+ *   {
+ *     "host1@inmarket.com": ["cc1@inmarket.com", "cc2@inmarket.com"],
+ *     "host2@inmarket.com": ["cc3@inmarket.com"]
+ *   }
+ */
+function parseHostCcMap(raw) {
+  const out = new Map();
+  if (!raw) return out;
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return out;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return out;
+  for (const [host, ccList] of Object.entries(parsed)) {
+    if (!host || typeof host !== 'string' || !Array.isArray(ccList)) continue;
+    const hostKey = host.trim().toLowerCase();
+    if (!hostKey) continue;
+    const ccSet = new Set(
+      ccList
+        .filter((e) => typeof e === 'string')
+        .map((e) => e.trim().toLowerCase())
+        .filter(Boolean)
+    );
+    if (ccSet.size > 0) out.set(hostKey, ccSet);
+  }
+  return out;
+}
+
 module.exports = {
   port: Number(port),
   nodeEnv,
@@ -48,6 +85,14 @@ module.exports = {
   // (to avoid double-DM). Shadow delivery failures are logged but don't
   // fail the pipeline. Empty Set => no shadow delivery.
   digestShadowRecipients: parseEmailSet(process.env.DIGEST_SHADOW_RECIPIENTS),
+
+  // Per-host CC routing. When a meeting is processed for host X, every
+  // address listed under X's entry also receives the digest as a Slack DM.
+  // Mirrors the shadow-recipient flow (best-effort, idempotency-free,
+  // failures logged). Independent of DIGEST_SHADOW_RECIPIENTS — both fire
+  // for the same meeting, but the orchestrator de-dupes so no one gets
+  // double-DM'd. Empty map => no CC routing.
+  digestHostCcMap: parseHostCcMap(process.env.DIGEST_HOST_CC_MAP),
 
   // InMarket Overview meetings (first-touch prospect intros) get a Highspot
   // deck link injected into the follow-up email body. Configure with the

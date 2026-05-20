@@ -316,6 +316,47 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
       }
     }
 
+    // Per-host CC: routing rule "when host X has a meeting, also DM Y and Z."
+    // Skip the host (already DM'd via main delivery) and anyone already
+    // covered by DIGEST_SHADOW_RECIPIENTS (already DM'd via shadow loop).
+    // Best-effort like shadow: failures logged, never fail the pipeline.
+    const hostEmailLower = (meetingSummary.hostEmail || '').toLowerCase();
+    const ccSet = config.digestHostCcMap.get(hostEmailLower);
+    if (ccSet && ccSet.size > 0) {
+      const ccTargets = Array.from(ccSet).filter(
+        (email) =>
+          email !== hostEmailLower &&
+          !config.digestShadowRecipients.has(email)
+      );
+
+      for (const ccEmail of ccTargets) {
+        try {
+          const ccUser = await userDirectory.findByEmail(ccEmail);
+          if (!ccUser?.slack_id) {
+            log.warn(
+              { ccEmail, hostEmail: hostEmailLower },
+              'CC recipient has no Slack ID; skipping CC DM'
+            );
+            continue;
+          }
+          const ccDelivery = await deliverToSlack({
+            meetingSummary,
+            intelligence,
+            target: { userId: ccUser.slack_id },
+          });
+          log.info(
+            { ccEmail, hostEmail: hostEmailLower, ccDigestTs: ccDelivery?.ts },
+            'CC digest delivered'
+          );
+        } catch (ccErr) {
+          log.warn(
+            { err: ccErr, ccEmail, hostEmail: hostEmailLower },
+            'CC digest delivery failed (best-effort, not retried)'
+          );
+        }
+      }
+    }
+
     const updateTimer = startStage('updateMeetingDeliveryStatus');
     await meetings.saveExtractionAndDigest(meetingSummary.zoomMeetingId, intelligence, delivery);
     endStage(updateTimer, metrics);
