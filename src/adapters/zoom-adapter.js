@@ -713,7 +713,33 @@ function adaptZoomEvent(rawEvent) {
   const accountId = rawEvent.payload?.account_id || obj.account_id || null;
 
   if (eventType === 'recording.transcript_completed') {
-    return adaptTranscriptCompleted(obj, accountId, rawEvent, eventId);
+    const result = adaptTranscriptCompleted(obj, accountId, rawEvent, eventId);
+
+    // Manual / offline ingestion path: if the event carries an inline
+    // transcript directly (used by scripts/ingest-manual-transcript.js
+    // for meetings that weren't cloud-recorded), set it on the
+    // MeetingSummary so the orchestrator's fetchTranscript stage skips
+    // — there's nothing to download from Zoom.
+    if (result && typeof rawEvent.inline_transcript === 'string' && rawEvent.inline_transcript.trim()) {
+      result.transcript = rawEvent.inline_transcript;
+    }
+    // Inline speakers (e.g., parsed from a VTT file by the ingestion
+    // script) get added as display-name-only attendees so the digest's
+    // "Contacts on call" section shows everyone who spoke.
+    if (result && Array.isArray(rawEvent.inline_speakers)) {
+      const existingNames = new Set(
+        result.attendees.flatMap((a) => [a?.name, a?.email]).filter(Boolean).map((s) => String(s).toLowerCase())
+      );
+      for (const speaker of rawEvent.inline_speakers) {
+        const key = String(speaker || '').toLowerCase().trim();
+        if (!key || existingNames.has(key)) continue;
+        existingNames.add(key);
+        result.attendees.push({ name: speaker, isHost: false });
+      }
+      result.attendeeCount = result.attendees.length;
+    }
+
+    return result;
   }
 
   // Default to the legacy summary adapter for meeting.summary_completed and

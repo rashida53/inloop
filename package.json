@@ -14,7 +14,8 @@
     "test:unit": "jest tests/unit",
     "test:integration": "jest tests/integration",
     "test:coverage": "jest --coverage",
-    "fire-test-meeting": "node scripts/fire-test-meeting.js"
+    "fire-test-meeting": "node scripts/fire-test-meeting.js",
+    "ingest-transcript": "node scripts/ingest-manual-transcript.js"
   },
   "engines": {
     "node": ">=18"
