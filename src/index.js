@@ -31,7 +31,7 @@ app.use(correlationId);
 app.use(
   '/webhooks/zoom',
   captureRawBody,
-  createZoomSignatureVerification(config.zoomVerificationToken),
+  createZoomSignatureVerification(config.zoomVerificationToken, config.zoomWebhookMaxAgeSeconds),
   zoomWebhooks
 );
 

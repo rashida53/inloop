@@ -24,6 +24,21 @@ module.exports = {
   claudeApiKey: process.env.CLAUDE_API_KEY || '',
   slackBotToken: process.env.SLACK_BOT_TOKEN || '',
   zoomVerificationToken: process.env.ZOOM_VERIFICATION_TOKEN || '',
+  // Zoom General App OAuth credentials, used to exchange the install code
+  // for access + refresh tokens (so we can call Zoom REST API to fetch
+  // recording transcripts). Find these on the Zoom Marketplace app page
+  // under "App Credentials" → Client ID / Client Secret.
+  zoomClientId: process.env.ZOOM_CLIENT_ID || '',
+  zoomClientSecret: process.env.ZOOM_CLIENT_SECRET || '',
+  // Max age in seconds for the x-zm-request-timestamp anti-replay check.
+  // Default 300 (5 min) per Zoom's signing recommendations. For local dev
+  // it's useful to bump this much higher (e.g. 86400 = 24h) so ngrok
+  // Replay of older captured webhooks doesn't trip the replay guard.
+  zoomWebhookMaxAgeSeconds: parseInt(process.env.ZOOM_WEBHOOK_MAX_AGE_SECONDS || '300', 10),
+  // Must match exactly what's listed in the app's OAuth Redirect URL +
+  // Allow Lists. Used both when exchanging the install code and (in the
+  // background) when refreshing access tokens.
+  zoomOauthRedirectUri: process.env.ZOOM_OAUTH_REDIRECT_URI || '',
   idempotencyTTLSeconds: parseInt(process.env.IDEMPOTENCY_TTL || '300', 10),
   // MVP cohort gate: only meetings whose host is in this set get processed.
   // Empty Set => no gate (process all meetings). See processMeeting in server.js.

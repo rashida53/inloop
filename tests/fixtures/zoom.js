@@ -102,6 +102,89 @@ const unknownEventType = {
   object: {},
 };
 
+/**
+ * Real-shape `recording.transcript_completed` event. Note the nested
+ * `payload.object` structure (which the synthetic `meeting.summary_completed`
+ * fixtures above don't have) — this matches what Zoom actually delivers.
+ */
+function recordingTranscriptCompleted(overrides = {}) {
+  return {
+    event: 'recording.transcript_completed',
+    event_id: 'evt_01HXYZTRANSCRIPT',
+    event_ts: Date.now(),
+    download_token: 'test-download-token-xyz',
+    payload: {
+      account_id: 'inmarket-zoom-account',
+      object: {
+        uuid: 'meeting-uuid-abc==',
+        id: '99887766',
+        host_id: 'host-id-xyz',
+        host_email: 'alice@inmarket.com',
+        host_name: 'Alice Chen',
+        topic: 'Acme RFP review',
+        type: 2,
+        start_time: '2026-05-19T14:00:00Z',
+        end_time: '2026-05-19T15:00:00Z',
+        duration: 60,
+        participants: [
+          { name: 'Alice Chen', user_email: 'alice@inmarket.com' },
+          { name: 'Bob Customer', user_email: 'bob@acme.com' },
+        ],
+        recording_files: [
+          {
+            id: 'rec_audio',
+            meeting_id: '99887766',
+            file_type: 'M4A',
+            file_extension: 'M4A',
+            download_url: 'https://us02web.zoom.us/rec/download/audio.m4a',
+            status: 'completed',
+          },
+          {
+            id: 'rec_video',
+            meeting_id: '99887766',
+            file_type: 'MP4',
+            file_extension: 'MP4',
+            download_url: 'https://us02web.zoom.us/rec/download/video.mp4',
+            status: 'completed',
+          },
+          {
+            id: 'rec_transcript',
+            meeting_id: '99887766',
+            file_type: 'TRANSCRIPT',
+            file_extension: 'VTT',
+            recording_type: 'audio_transcript',
+            download_url: 'https://us02web.zoom.us/rec/download/transcript.vtt',
+            status: 'completed',
+          },
+        ],
+      },
+      ...overrides.payload,
+    },
+    ...overrides,
+  };
+}
+
+const recordingTranscriptCompletedNoTranscriptFile = {
+  event: 'recording.transcript_completed',
+  event_id: 'evt_no_transcript_file',
+  event_ts: Date.now(),
+  payload: {
+    account_id: 'inmarket-zoom-account',
+    object: {
+      id: '11223344',
+      topic: 'Meeting without transcript file',
+      host_email: 'alice@inmarket.com',
+      start_time: '2026-05-19T14:00:00Z',
+      end_time: '2026-05-19T15:00:00Z',
+      duration: 60,
+      recording_files: [
+        // Only audio/video, no transcript
+        { id: 'rec_audio', file_type: 'M4A', download_url: 'https://...' },
+      ],
+    },
+  },
+};
+
 module.exports = {
   meetingSummaryCompleted,
   meetingSummaryCompletedExternalHost,
@@ -109,4 +192,6 @@ module.exports = {
   meetingSummaryNoAiCompanion,
   urlValidation,
   unknownEventType,
+  recordingTranscriptCompleted,
+  recordingTranscriptCompletedNoTranscriptFile,
 };

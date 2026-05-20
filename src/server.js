@@ -4,9 +4,11 @@ const config = require('./config');
 const idempotency = require('./db/idempotency');
 const meetings = require('./db/meetings');
 const userDirectory = require('./users');
-const { adaptZoomPayload } = require('./adapters/zoom-adapter');
+const { adaptZoomEvent } = require('./adapters/zoom-adapter');
 const { extractFromRecording } = require('./extraction');
 const { deliverToSlack } = require('./delivery');
+const zoomApi = require('./integrations/zoom-api');
+const { parseVtt } = require('./utils/vtt-parser');
 
 /**
  * processMeeting — orchestration entry point for one Zoom
@@ -60,19 +62,30 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
 
   try {
     const adaptTimer = startStage('adaptZoomPayload');
-    const rawPayload = rawEvent.payload || rawEvent.object || {};
-    meetingSummary = adaptZoomPayload(rawPayload, rawEvent.event_id);
+    // adaptZoomEvent dispatches on rawEvent.event — recording.transcript_completed
+    // routes to the transcript adapter (extracts transcriptDownloadUrl + zoomAccountId);
+    // anything else falls back to the legacy summary adapter.
+    meetingSummary = adaptZoomEvent(rawEvent);
     endStage(adaptTimer, metrics);
 
     if (!meetingSummary) {
       throw new Error('Invalid Zoom event payload after adapter processing');
     }
 
-    if (!rawEvent.event_id) {
-      throw new Error('Zoom event is missing event_id');
-    }
+    // Pick a unique-per-delivery identifier for the idempotency key.
+    // Real Zoom webhooks don't include `event_id` in the body — they use
+    // `event_ts` (ms-epoch timestamp). Synthetic tests pass `event_id`
+    // directly. Final fallback is a generated UUID so we never block on
+    // a totally unidentifiable event.
+    const deliveryId =
+      rawEvent.event_id ||
+      (rawEvent.event_ts ? String(rawEvent.event_ts) : null) ||
+      uuidv4();
 
-    log.info({ zoomMeetingId: meetingSummary.zoomMeetingId }, 'Meeting payload adapted');
+    log.info(
+      { zoomMeetingId: meetingSummary.zoomMeetingId, deliveryId },
+      'Meeting payload adapted'
+    );
 
     // MVP cohort gate: only meetings whose host email is on the
     // ALLOWED_HOST_EMAILS list get processed. Empty list (default) means
@@ -104,7 +117,7 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
       }
     }
 
-    idempotencyKey = `zoom:meeting:${meetingSummary.zoomMeetingId}:${rawEvent.event_id}`;
+    idempotencyKey = `zoom:meeting:${meetingSummary.zoomMeetingId}:${deliveryId}`;
     const claim = await idempotency.claimKey(idempotencyKey, rawEvent);
 
     if (!claim.claimed) {
@@ -157,6 +170,38 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
       };
       await idempotency.saveResponse(idempotencyKey, response, 'done');
       return { correlationId, eventId: rawEvent.event_id, idempotencyKey, ...response, metrics };
+    }
+
+    // If the adapter handed us a transcript download URL (real Zoom
+    // recording.transcript_completed event), fetch the VTT, parse it into
+    // plain text with speaker labels preserved, and put it on
+    // meetingSummary.transcript. The extraction layer prefers .transcript
+    // over .summary, so once this stage runs, Claude gets the raw transcript.
+    //
+    // Synthetic test events skip this stage (no transcriptDownloadUrl) and
+    // continue to use the summary path via meetingSummary.summary.
+    if (meetingSummary.transcriptDownloadUrl && !meetingSummary.transcript) {
+      const fetchTimer = startStage('fetchTranscript');
+      try {
+        const vtt = await zoomApi.downloadRecordingFile(
+          meetingSummary.transcriptDownloadUrl,
+          meetingSummary.zoomAccountId,
+          meetingSummary.transcriptDownloadToken
+        );
+        meetingSummary.transcript = parseVtt(vtt);
+        endStage(fetchTimer, metrics);
+        log.info(
+          {
+            transcriptChars: meetingSummary.transcript.length,
+            usedDownloadToken: !!meetingSummary.transcriptDownloadToken,
+          },
+          'Transcript fetched and parsed'
+        );
+      } catch (err) {
+        endStage(fetchTimer, metrics);
+        log.error({ err }, 'fetchTranscript failed');
+        throw err;
+      }
     }
 
     const extractTimer = startStage('extractMeetingIntelligence');

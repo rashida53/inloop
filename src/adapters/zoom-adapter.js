@@ -86,6 +86,11 @@ function safeString(value, fallback = '', fieldName = 'field') {
     if (typeof value === 'string' && value.trim()) {
       return value.trim();
     }
+    // Real Zoom sends numeric meeting IDs (e.g. id: 3293123694). Coerce
+    // finite numbers to their decimal string so we don't lose them.
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
+    }
     return fallback;
   } catch (err) {
     logger.warn({ fieldName, value, err: err.message }, 'Error extracting string field');
@@ -569,9 +574,158 @@ const EXAMPLE_MEETING_SUMMARY = {
 // Exports
 // ============================================================================
 
+/**
+ * Adapter for recording.transcript_completed events.
+ *
+ * Unlike meeting.summary_completed (which carries the summary text inline),
+ * this event carries POINTERS to recording files. The actual transcript
+ * (VTT) is downloaded separately by the orchestrator's fetchTranscript
+ * stage using the stored OAuth tokens for the installing account.
+ *
+ * Returns a MeetingSummary with:
+ *   - transcriptDownloadUrl: where the orchestrator fetches the VTT
+ *   - zoomAccountId: which account's OAuth tokens to use
+ *   - transcriptDownloadToken: short-lived per-event token (some Zoom events
+ *     include this as an alternative to OAuth auth on the download)
+ *
+ * @param {object} rawObject - The `payload.object` from the event
+ * @param {string|null} accountId - The `payload.account_id` from the event
+ * @param {object} rawEvent - Full event (for downloadToken)
+ * @param {string} eventId
+ * @returns {object|null} MeetingSummary, or null if essential fields are missing
+ */
+function adaptTranscriptCompleted(rawObject, accountId, rawEvent, eventId) {
+  if (!rawObject || typeof rawObject !== 'object') {
+    logger.error({ rawObject }, 'Invalid recording.transcript_completed payload');
+    return null;
+  }
+
+  const warnings = [];
+
+  const zoomMeetingId = safeString(
+    rawObject.id || rawObject.meeting_id || rawObject.uuid,
+    '',
+    'meetingId'
+  );
+  if (!zoomMeetingId) {
+    logger.error(
+      { payload: JSON.stringify(rawObject).substring(0, 200), eventId },
+      'recording.transcript_completed missing meeting ID'
+    );
+    return null;
+  }
+
+  // Locate the TRANSCRIPT file in the recording bundle.
+  const recordingFiles = Array.isArray(rawObject.recording_files)
+    ? rawObject.recording_files
+    : [];
+  const transcriptFile = recordingFiles.find(
+    (f) =>
+      f &&
+      (f.file_type === 'TRANSCRIPT' ||
+        f.recording_type === 'audio_transcript' ||
+        f.file_extension === 'VTT')
+  );
+
+  if (!transcriptFile?.download_url) {
+    const msg = `Meeting ${zoomMeetingId}: no TRANSCRIPT file with download_url in recording_files`;
+    logger.warn({ recordingFileCount: recordingFiles.length }, msg);
+    warnings.push(msg);
+  }
+
+  const hostEmail = safeString(rawObject.host_email, '', 'hostEmail');
+  if (!hostEmail) {
+    warnings.push(`Meeting ${zoomMeetingId}: missing host email`);
+  }
+
+  const startTime = safeTimestamp(rawObject.start_time, 'startTime');
+  const endTime = safeTimestamp(rawObject.end_time, 'endTime');
+  let durationMinutes = safeNumber(rawObject.duration, 0, 'duration');
+  if (!durationMinutes && startTime && endTime) {
+    durationMinutes = Math.round((endTime - startTime) / (1000 * 60));
+  }
+
+  const title = safeString(
+    rawObject.topic || rawObject.subject || rawObject.title,
+    'Untitled Meeting',
+    'title'
+  );
+
+  const { attendees, uniqueCount } = normalizeAttendees(rawObject.participants, hostEmail);
+
+  const result = {
+    zoomMeetingId,
+    title,
+    hostEmail,
+    hostName: safeString(rawObject.host_name || rawObject.host, '', 'hostName'),
+    startTime: startTime ? startTime.toISOString() : new Date().toISOString(),
+    endTime: endTime ? endTime.toISOString() : new Date().toISOString(),
+    durationMinutes,
+    attendees,
+    attendeeCount: uniqueCount,
+    hasRecording: true, // by definition — this event fires after recording
+    source: 'zoom',
+    extractedAt: new Date().toISOString(),
+    warnings,
+    // Transcript-specific fields. The orchestrator's fetchTranscript stage
+    // reads these and populates `transcript` with the downloaded + parsed
+    // VTT content. Extraction then uses `transcript` directly.
+    transcriptDownloadUrl: transcriptFile?.download_url || null,
+    transcriptDownloadToken: safeString(rawEvent?.download_token, '', 'downloadToken'),
+    zoomAccountId: accountId || null,
+  };
+
+  logger.info(
+    {
+      zoomMeetingId,
+      title,
+      hostEmail,
+      attendeeCount: uniqueCount,
+      hasTranscriptUrl: !!result.transcriptDownloadUrl,
+      warnings: warnings.length,
+      eventId,
+    },
+    'recording.transcript_completed adapted successfully'
+  );
+
+  return result;
+}
+
+/**
+ * Dispatcher: picks the right per-event-type adapter based on rawEvent.event.
+ * Synthetic test events that don't carry rawEvent.payload still work — they
+ * route to adaptZoomPayload using rawEvent.object directly.
+ *
+ * @param {object} rawEvent - Full Zoom webhook event
+ * @returns {object|null}
+ */
+function adaptZoomEvent(rawEvent) {
+  if (!rawEvent || typeof rawEvent !== 'object') return null;
+
+  const eventType = rawEvent.event;
+  const eventId = rawEvent.event_id;
+  // Real Zoom events nest the meeting object under payload.object.
+  // Synthetic test events (legacy shape) put it directly on event.object.
+  const obj = rawEvent.payload?.object || rawEvent.object || rawEvent.payload || {};
+  // account_id is usually at payload level per Zoom docs, but real
+  // recording.transcript_completed events sometimes nest it inside the
+  // meeting object. Look in both places.
+  const accountId = rawEvent.payload?.account_id || obj.account_id || null;
+
+  if (eventType === 'recording.transcript_completed') {
+    return adaptTranscriptCompleted(obj, accountId, rawEvent, eventId);
+  }
+
+  // Default to the legacy summary adapter for meeting.summary_completed and
+  // for synthetic events that don't specify an event type.
+  return adaptZoomPayload(obj, eventId);
+}
+
 module.exports = {
   // Main adapter function
   adaptZoomPayload,
+  adaptZoomEvent,
+  adaptTranscriptCompleted,
 
   // Validation helpers (for testing or direct use)
   safeString,

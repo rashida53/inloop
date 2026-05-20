@@ -6,9 +6,11 @@ async function extractFromRecording(recording) {
   if (!transcript.trim()) {
     throw new Error(
       'extractFromRecording requires recording.transcript or recording.summary. ' +
-        'For Zoom meetings, this is the AI Companion summary (summary_overview + ' +
-        'summary_details) assembled by the zoom-adapter. An empty value usually ' +
-        'means the meeting was not AI-summarized by Zoom.'
+        'For Zoom meetings, transcript is populated by the orchestrator after ' +
+        'fetching the VTT file from a recording.transcript_completed webhook. ' +
+        'An empty value usually means the meeting was not cloud-recorded, ' +
+        'transcription was disabled on the account, or the fetchTranscript ' +
+        'stage failed.'
     );
   }
 

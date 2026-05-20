@@ -4,7 +4,12 @@ const { verifyZoomSignature, validateTimestamp } = require('../../src/webhooks/v
 const SECRET = 'test_secret_token_12345';
 
 function signZoomBody(timestamp, body, secret = SECRET) {
-  const mac = crypto.createHmac('sha256', secret).update(`${timestamp}${body}`).digest('hex');
+  // Match Zoom's canonical signing format: `v0:{timestamp}:{body}` with
+  // colons. Tests previously used `{timestamp}{body}` (no colons) which
+  // happened to validate against our buggy verifier but didn't match
+  // what real Zoom sends. Tests are now real-Zoom-compatible.
+  const message = `v0:${timestamp}:${body}`;
+  const mac = crypto.createHmac('sha256', secret).update(message).digest('hex');
   return `v0=${mac}`;
 }
 

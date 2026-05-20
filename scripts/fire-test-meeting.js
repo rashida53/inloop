@@ -37,27 +37,19 @@ const hostEmail =
 
 const meetingId = process.env.TEST_MEETING_ID || `synthetic-${Date.now()}`;
 const eventId = `evt-synthetic-${uuidv4()}`;
+const meetingTypeArg = (process.env.TEST_MEETING_TYPE || 'rfp').toLowerCase();
 
-const event = {
-  event: 'meeting.summary_completed',
-  event_id: eventId,
-  timestamp: Math.floor(Date.now() / 1000),
-  object: {
-    id: meetingId,
-    topic: 'Acme Q2 SaaS evaluation (synthetic test)',
-    host_email: hostEmail,
-    host_name: 'Test Host',
-    start_time: '2026-05-18T14:00:00Z',
-    end_time: '2026-05-18T15:00:00Z',
-    duration: 60,
+// Per-meeting-type synthetic content. Each variant is shaped so Claude
+// reliably classifies as the matching meetingType AND populates the
+// type-specific fields the corresponding renderer reads.
+const SCENARIOS = {
+  rfp: {
+    topic: 'Acme RFP review — Q3 campaign plan',
     participants: [
       { name: 'Test Host', user_email: hostEmail },
       { name: 'Bob Customer', user_email: 'bob@acme-test.com' },
       { name: 'Carol Buyer', user_email: 'carol@acme-test.com' },
     ],
-    // Explicit RFP review content with a concrete campaign launch date so
-    // Claude reliably classifies as "rfp_review" AND extracts a launch date
-    // for the timeline renderer to compute milestones from.
     summary_overview:
       'RFP review call: Test Host walked Bob and Carol from Acme through the InLoop SaaS RFP response and proposed campaign plan. Confirmed campaign launch date of 2026-08-15. Bob raised concerns about pricing tiers; Carol emphasized SOC 2 Type II attestation. Aligned on a 90-day pilot at $50k contingent on SOC 2 documentation delivery, with the campaign going live on August 15, 2026.',
     summary_details: [
@@ -79,9 +71,91 @@ const event = {
       {
         label: 'Next Steps',
         summary:
-          'Test Host to send MSA draft + SOC 2 Type I report by Friday. Bob to confirm procurement timeline by Monday. Carol to identify the technical contact for the analytics integration. Mid-pilot check-in at day 30.',
+          'Test Host to send MSA draft + SOC 2 Type I report by Friday. Bob to confirm procurement timeline by Monday. Carol to identify technical contact for the analytics integration. Mid-pilot check-in at day 30.',
       },
     ],
+  },
+
+  overview: {
+    topic: 'InMarket overview — first intro with FreshBistro (new prospect)',
+    participants: [
+      { name: 'Test Host', user_email: hostEmail },
+      { name: 'Dana Prospect', user_email: 'dana@freshbistro-test.com' },
+      { name: 'Eli VP Marketing', user_email: 'eli@freshbistro-test.com' },
+    ],
+    summary_overview:
+      'Introductory InMarket overview call with FreshBistro, a new restaurant-chain prospect. Test Host walked Dana (Director of Customer Acquisition) and Eli (VP Marketing) through InMarket capabilities, the location-intelligence platform, and example campaigns. First-touch meeting — no prior history with this account. FreshBistro operates 240 locations across the Southeast US, expanding into the Midwest in 2027, and is evaluating location-based audience solutions.',
+    summary_details: [
+      {
+        label: 'Discussion',
+        summary:
+          'Walked through InMarket overview deck. Discussed audience segmentation, geofencing capabilities, and case studies from comparable QSR/casual-dining accounts. Dana asked detailed questions about offline conversion measurement; Eli was focused on driving foot traffic to new Midwest locations during their 2027 expansion.',
+      },
+      {
+        label: 'Customer Context',
+        summary:
+          'FreshBistro: ~240 locations, restaurant/QSR vertical, mid-market in revenue terms. Dana owns customer acquisition budget; Eli is the marketing decision maker and likely champion. Current state: no programmatic location-based advertising in place; relying on national OOH and digital display.',
+      },
+      {
+        label: 'Next Steps',
+        summary:
+          'Test Host to schedule a follow-up campaign-scoping call with the AM and FreshBistro within two weeks. AM to receive briefing: account profile, opportunity sizing (Midwest expansion budget), Eli identified as decision maker, Dana identified as economic buyer. AM should kick off the campaign detail sheet workflow with FreshBistro. RFP request to be filed via the AM intake system.',
+      },
+    ],
+  },
+
+  internal: {
+    topic: 'Internal sales sync — Acme campaign setup blockers',
+    participants: [
+      { name: 'Test Host', user_email: hostEmail },
+      { name: 'Frank Ops', user_email: 'frank@inmarket.com' },
+      { name: 'Grace AdOps', user_email: 'grace@inmarket.com' },
+      { name: 'Hank Audience', user_email: 'hank@inmarket.com' },
+    ],
+    summary_overview:
+      'Internal sync between sales, ad ops, and audience teams to align on Acme campaign setup. All InMarket attendees. Discussed blockers around creative delivery timeline, audience-reach modeling for the Atlanta DMA, and pre-sales material gaps for an upcoming pitch.',
+    summary_details: [
+      {
+        label: 'Blockers',
+        summary:
+          'Creative kickoff is blocked until Acme provides brand guidelines (overdue from client). Audience-reach modeling tool is down for maintenance until Wednesday — Hank needs to use the backup spreadsheet template. Compliance review for the SOC 2 attestation letter is pending — Grace will follow up with legal.',
+      },
+      {
+        label: 'Audience Requests',
+        summary:
+          'Need audience size estimates for QSR vertical in Atlanta DMA (Acme). Need overlap analysis between FreshBistro target audience and existing programmatic segments. Need fresh competitive set for restaurant accounts in Q3.',
+      },
+      {
+        label: 'Materials Needed',
+        summary:
+          'Updated InMarket Overview deck (latest is from Q1, need Q3 version with new case studies). Industry-specific one-pager for QSR vertical. Refreshed case study deck featuring restaurant-chain wins.',
+      },
+      {
+        label: 'Next Steps',
+        summary:
+          'Frank to nudge Acme for brand guidelines by Friday. Grace to ping legal on SOC 2 letter. Hank to produce QSR audience estimates with the backup template. Test Host to chase the marketing team for the refreshed materials.',
+      },
+    ],
+  },
+};
+
+const scenario = SCENARIOS[meetingTypeArg] || SCENARIOS.rfp;
+
+const event = {
+  event: 'meeting.summary_completed',
+  event_id: eventId,
+  timestamp: Math.floor(Date.now() / 1000),
+  object: {
+    id: meetingId,
+    topic: scenario.topic,
+    host_email: hostEmail,
+    host_name: 'Test Host',
+    start_time: '2026-05-18T14:00:00Z',
+    end_time: '2026-05-18T15:00:00Z',
+    duration: 60,
+    participants: scenario.participants,
+    summary_overview: scenario.summary_overview,
+    summary_details: scenario.summary_details,
   },
 };
 
@@ -92,6 +166,8 @@ function banner(title) {
 
 async function main() {
   banner('Synthetic meeting test');
+  console.log(`Scenario:       ${meetingTypeArg}  (override with TEST_MEETING_TYPE=overview|rfp|internal)`);
+  console.log(`Topic:          ${scenario.topic}`);
   console.log(`Host email:     ${hostEmail}`);
   console.log(`Meeting ID:     ${meetingId}`);
   console.log(`Event ID:       ${eventId}`);

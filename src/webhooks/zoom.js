@@ -127,6 +127,16 @@ router.post('/', async (req, res, next) => {
       case 'endpoint.url_validation':
         return handleUrlValidation(event, res);
 
+      // Primary production path: real Zoom meetings fire this when the
+      // recording transcript file is ready. The orchestrator fetches the
+      // VTT via Zoom REST API and feeds it to Claude.
+      case 'recording.transcript_completed':
+        return handleMeetingSummaryCompleted(event, res, req.correlationId);
+
+      // Legacy/synthetic path: AI Companion summary delivered inline in the
+      // webhook. Kept for backwards compatibility with the synthetic test
+      // script which still fires this shape. In production, this event
+      // shouldn't fire — we no longer subscribe to it in the Zoom app.
       case 'meeting.summary_completed':
         return handleMeetingSummaryCompleted(event, res, req.correlationId);
 

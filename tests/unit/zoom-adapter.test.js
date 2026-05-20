@@ -1,4 +1,8 @@
-const { adaptZoomPayload } = require('../../src/adapters/zoom-adapter');
+const {
+  adaptZoomPayload,
+  adaptZoomEvent,
+  adaptTranscriptCompleted,
+} = require('../../src/adapters/zoom-adapter');
 const fixtures = require('../fixtures/zoom');
 
 describe('adaptZoomPayload', () => {
@@ -114,5 +118,85 @@ describe('adaptZoomPayload', () => {
     const summary = adaptZoomPayload(event.object, event.event_id);
     expect(summary.warnings.length).toBeGreaterThan(0);
     expect(summary.warnings.some((w) => w.includes('timestamps'))).toBe(true);
+  });
+});
+
+describe('adaptTranscriptCompleted', () => {
+  test('extracts the TRANSCRIPT download URL and account ID from a recording.transcript_completed event', () => {
+    const event = fixtures.recordingTranscriptCompleted();
+    const summary = adaptZoomEvent(event);
+
+    expect(summary).not.toBeNull();
+    expect(summary).toMatchObject({
+      zoomMeetingId: '99887766',
+      title: 'Acme RFP review',
+      hostEmail: 'alice@inmarket.com',
+      source: 'zoom',
+      hasRecording: true,
+      transcriptDownloadUrl: 'https://us02web.zoom.us/rec/download/transcript.vtt',
+      transcriptDownloadToken: 'test-download-token-xyz',
+      zoomAccountId: 'inmarket-zoom-account',
+    });
+  });
+
+  test('warns but does not return null when the recording bundle has no transcript file', () => {
+    const summary = adaptZoomEvent(fixtures.recordingTranscriptCompletedNoTranscriptFile);
+
+    expect(summary).not.toBeNull();
+    expect(summary.transcriptDownloadUrl).toBeNull();
+    expect(summary.warnings.some((w) => /transcript/i.test(w))).toBe(true);
+  });
+
+  test('returns null when essential fields are missing', () => {
+    const broken = {
+      event: 'recording.transcript_completed',
+      event_id: 'evt_broken',
+      payload: { account_id: 'x', object: {} }, // no id, no meeting_id, no uuid
+    };
+    expect(adaptZoomEvent(broken)).toBeNull();
+  });
+
+  test('handles MP4/M4A recording_files entries without a TRANSCRIPT (degrades gracefully)', () => {
+    const summary = adaptTranscriptCompleted(
+      {
+        id: '12345',
+        topic: 'No transcript meeting',
+        host_email: 'host@x.com',
+        start_time: '2026-05-19T14:00:00Z',
+        end_time: '2026-05-19T15:00:00Z',
+        recording_files: [
+          { file_type: 'M4A', download_url: 'https://example.com/audio.m4a' },
+        ],
+      },
+      'acct-1',
+      {},
+      'evt-test'
+    );
+
+    expect(summary.transcriptDownloadUrl).toBeNull();
+    expect(summary.zoomAccountId).toBe('acct-1');
+  });
+});
+
+describe('adaptZoomEvent dispatcher', () => {
+  test('routes recording.transcript_completed to the transcript adapter', () => {
+    const event = fixtures.recordingTranscriptCompleted();
+    const summary = adaptZoomEvent(event);
+    expect(summary.transcriptDownloadUrl).toBeTruthy();
+  });
+
+  test('routes meeting.summary_completed to the legacy summary adapter', () => {
+    const event = fixtures.meetingSummaryCompleted();
+    const summary = adaptZoomEvent(event);
+    // Transcript fields should NOT be set for summary events
+    expect(summary.transcriptDownloadUrl).toBeUndefined();
+    // Summary content should be assembled from AI Companion fields
+    expect(summary.summary).toMatch(/Overview:/);
+  });
+
+  test('returns null for malformed input', () => {
+    expect(adaptZoomEvent(null)).toBeNull();
+    expect(adaptZoomEvent('string')).toBeNull();
+    expect(adaptZoomEvent(undefined)).toBeNull();
   });
 });
