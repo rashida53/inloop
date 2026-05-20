@@ -13,9 +13,27 @@ function hashRequest(body) {
 
 /**
  * Claim an idempotency key for processing.
- * Returns { claimed: boolean, existing: { status, response, ownerId } | null }
- * If claimed=true, caller must process and call saveResponse().
- * If claimed=false, caller must return the cached response or wait for completion.
+ *
+ * Returns { claimed: boolean, reclaimed: boolean, existing: { status, response, ownerId } | null }
+ *
+ * - claimed=true, reclaimed=false → fresh claim, no prior attempt
+ * - claimed=true, reclaimed=true  → took over a row whose previous attempt
+ *                                   ended in status='failed'; safe to retry
+ * - claimed=false                 → row exists with status='done' or
+ *                                   'processing'; caller must return cached
+ *                                   response or wait
+ *
+ * The reclaim path is what makes the orchestrator recoverable when the
+ * pipeline crashes mid-flight (e.g. Postgres rejects a JSONB null byte and
+ * saveResponse marks the key 'failed'). Without it, the same event_id can
+ * never be retried without manual DB cleanup.
+ *
+ * Implementation: a single INSERT ... ON CONFLICT DO UPDATE with a WHERE
+ * clause that only matches rows in 'failed' state. Postgres's xmax system
+ * column tells us whether the returned row was newly inserted (xmax=0) or
+ * updated from a prior 'failed' row (xmax!=0). Two concurrent reclaim
+ * attempts serialize via row lock — only one can move 'failed' →
+ * 'processing'; the other sees status='processing' and gets claimed=false.
  */
 async function claimKey(key, requestBody, ownerId = process.pid) {
   if (!key) throw new Error('Idempotency key is required');
@@ -24,25 +42,42 @@ async function claimKey(key, requestBody, ownerId = process.pid) {
   const ttlSeconds = parseInt(process.env.IDEMPOTENCY_TTL || '300', 10);
 
   try {
-    // Try to insert; if key exists, return the existing record
     const insertResult = await db.query(
       `
       INSERT INTO idempotency_keys (key, request_hash, status, owner_id, expires_at)
-      VALUES ($1, $2, $3, $4, NOW() + INTERVAL '1 second' * $5)
-      ON CONFLICT (key) DO NOTHING
-      RETURNING key, status, response, owner_id;
+      VALUES ($1, $2, 'processing', $3, NOW() + INTERVAL '1 second' * $4)
+      ON CONFLICT (key) DO UPDATE
+        SET status = 'processing',
+            request_hash = EXCLUDED.request_hash,
+            owner_id = EXCLUDED.owner_id,
+            expires_at = EXCLUDED.expires_at,
+            response = NULL,
+            error_message = NULL,
+            attempt_count = idempotency_keys.attempt_count + 1,
+            updated_at = NOW()
+        WHERE idempotency_keys.status = 'failed'
+      RETURNING key, status, response, owner_id, (xmax <> 0) AS reclaimed;
       `,
-      [key, requestHash, 'processing', ownerId, ttlSeconds],
+      [key, requestHash, ownerId, ttlSeconds],
       { name: 'idempotency_claim' }
     );
 
     if (insertResult.rows.length > 0) {
-      // We claimed the key; proceed with processing
-      logger.debug({ key }, 'Idempotency key claimed');
-      return { claimed: true, existing: null };
+      const row = insertResult.rows[0];
+      const reclaimed = row.reclaimed === true;
+      if (reclaimed) {
+        logger.warn(
+          { key },
+          'Idempotency key reclaimed from previously-failed attempt'
+        );
+      } else {
+        logger.debug({ key }, 'Idempotency key claimed');
+      }
+      return { claimed: true, reclaimed, existing: null };
     }
 
-    // Key exists; fetch the record
+    // Conflict and WHERE filter didn't match — row is 'done' or 'processing'.
+    // Fetch it so the caller can return the cached response.
     const existingResult = await db.query(
       `SELECT status, response, owner_id FROM idempotency_keys WHERE key = $1;`,
       [key],
@@ -50,8 +85,9 @@ async function claimKey(key, requestBody, ownerId = process.pid) {
     );
 
     if (existingResult.rows.length === 0) {
+      // Rare: row was deleted (e.g. cleanup job) between the upsert and the
+      // select. Retry once — the next attempt will see no row and insert.
       logger.warn({ key }, 'Idempotency key not found after conflict; retrying...');
-      // Rare race condition; retry once
       return claimKey(key, requestBody, ownerId);
     }
 
@@ -59,6 +95,7 @@ async function claimKey(key, requestBody, ownerId = process.pid) {
     logger.info({ key, status: record.status }, 'Idempotency key already exists');
     return {
       claimed: false,
+      reclaimed: false,
       existing: {
         status: record.status,
         response: record.response,

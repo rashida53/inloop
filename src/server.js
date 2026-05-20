@@ -153,6 +153,13 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
     idempotencyKey = `zoom:meeting:${meetingSummary.zoomMeetingId}:${deliveryId}`;
     const claim = await idempotency.claimKey(idempotencyKey, rawEvent);
 
+    if (claim.claimed && claim.reclaimed) {
+      log.warn(
+        { idempotencyKey },
+        'Retrying meeting that previously failed; idempotency row reclaimed'
+      );
+    }
+
     if (!claim.claimed) {
       log.info(
         { idempotencyKey, existing: claim.existing },
