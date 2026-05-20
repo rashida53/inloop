@@ -27,8 +27,19 @@
  * reduces token count and reads better — Zoom often splits a single
  * utterance into multiple back-to-back VTT cues at sentence boundaries.
  */
+/**
+ * @returns {{ transcript: string, speakers: string[] }}
+ *   - transcript: lines joined by `\n`, each shaped as "Speaker: text"
+ *     when a speaker was identified, otherwise just the content.
+ *   - speakers: unique speaker names in first-appearance order. Useful for
+ *     populating the meeting attendees list when the webhook payload
+ *     itself doesn't include a participants array (e.g., Zoom's
+ *     recording.transcript_completed event).
+ */
 function parseVtt(vttText) {
-  if (typeof vttText !== 'string' || !vttText.trim()) return '';
+  if (typeof vttText !== 'string' || !vttText.trim()) {
+    return { transcript: '', speakers: [] };
+  }
 
   // Normalize line endings; split into cue blocks separated by blank lines.
   const blocks = vttText
@@ -38,6 +49,8 @@ function parseVtt(vttText) {
     .filter(Boolean);
 
   const turns = [];
+  const speakerSet = new Set();
+  const speakers = [];
 
   for (const block of blocks) {
     // Skip the WEBVTT header / STYLE / NOTE blocks.
@@ -57,6 +70,11 @@ function parseVtt(vttText) {
     const { speaker, content } = extractSpeaker(text);
     if (!content) continue;
 
+    if (speaker && !speakerSet.has(speaker)) {
+      speakerSet.add(speaker);
+      speakers.push(speaker);
+    }
+
     if (
       speaker !== null &&
       turns.length > 0 &&
@@ -72,7 +90,11 @@ function parseVtt(vttText) {
     }
   }
 
-  return turns.map((t) => (t.speaker ? `${t.speaker}: ${t.content}` : t.content)).join('\n');
+  const transcript = turns
+    .map((t) => (t.speaker ? `${t.speaker}: ${t.content}` : t.content))
+    .join('\n');
+
+  return { transcript, speakers };
 }
 
 /**

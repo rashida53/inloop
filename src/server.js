@@ -31,6 +31,39 @@ const { parseVtt } = require('./utils/vtt-parser');
  * consumer calls processMeeting(rawEvent); nothing else changes.
  */
 
+/**
+ * Add unique VTT speakers to meetingSummary.attendees as display-name-only
+ * entries (no email). Skips speakers already present by case-insensitive
+ * name match against existing attendees' name or email.
+ *
+ * Mutates meetingSummary.attendees in place and updates attendeeCount.
+ */
+function mergeSpeakersIntoAttendees(meetingSummary, speakers) {
+  if (!Array.isArray(speakers) || speakers.length === 0) return;
+
+  const existing = Array.isArray(meetingSummary.attendees)
+    ? meetingSummary.attendees
+    : [];
+  const knownNames = new Set(
+    existing
+      .flatMap((a) => [a?.name, a?.email])
+      .filter(Boolean)
+      .map((s) => String(s).toLowerCase().trim())
+  );
+
+  const additions = [];
+  for (const speaker of speakers) {
+    const key = String(speaker).toLowerCase().trim();
+    if (!key || knownNames.has(key)) continue;
+    knownNames.add(key);
+    additions.push({ name: speaker, isHost: false });
+  }
+
+  if (additions.length === 0) return;
+  meetingSummary.attendees = existing.concat(additions);
+  meetingSummary.attendeeCount = meetingSummary.attendees.length;
+}
+
 function startStage(stageName) {
   return { stageName, start: Date.now() };
 }
@@ -188,11 +221,24 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
           meetingSummary.zoomAccountId,
           meetingSummary.transcriptDownloadToken
         );
-        meetingSummary.transcript = parseVtt(vtt);
+        const { transcript, speakers } = parseVtt(vtt);
+        meetingSummary.transcript = transcript;
+
+        // recording.transcript_completed events don't carry a participants
+        // array — Zoom centers the payload on the recording, not who was
+        // on the call. So the adapter starts with just the host as the
+        // only attendee. Use unique speakers from the VTT transcript to
+        // backfill the attendees list with everyone who actually spoke.
+        // Match against existing attendees by case-insensitive name to
+        // avoid duplicating the host.
+        mergeSpeakersIntoAttendees(meetingSummary, speakers);
+
         endStage(fetchTimer, metrics);
         log.info(
           {
-            transcriptChars: meetingSummary.transcript.length,
+            transcriptChars: transcript.length,
+            speakers: speakers.length,
+            attendeesAfterMerge: meetingSummary.attendees?.length || 0,
             usedDownloadToken: !!meetingSummary.transcriptDownloadToken,
           },
           'Transcript fetched and parsed'
