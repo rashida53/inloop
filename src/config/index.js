@@ -76,6 +76,15 @@ module.exports = {
   // Allow Lists. Used both when exchanging the install code and (in the
   // background) when refreshing access tokens.
   zoomOauthRedirectUri: process.env.ZOOM_OAUTH_REDIRECT_URI || '',
+
+  // Salesforce Connected App OAuth credentials. Registered in Setup →
+  // App Manager → New Connected App with OAuth scopes `api` + `refresh_token`.
+  // The Connected App must list the InLoop callback URL in its Allow
+  // List (matches salesforceOauthRedirectUri below).
+  salesforceClientId: process.env.SALESFORCE_CLIENT_ID || '',
+  salesforceClientSecret: process.env.SALESFORCE_CLIENT_SECRET || '',
+  // Must match exactly what's listed in the Connected App's Callback URL.
+  salesforceOauthRedirectUri: process.env.SALESFORCE_OAUTH_REDIRECT_URI || '',
   idempotencyTTLSeconds: parseInt(process.env.IDEMPOTENCY_TTL || '300', 10),
   // MVP cohort gate: only meetings whose host is in this set get processed.
   // Empty Set => no gate (process all meetings). See processMeeting in server.js.

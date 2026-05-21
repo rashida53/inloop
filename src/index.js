@@ -8,6 +8,7 @@ const healthRoutes = require('./routes/health');
 const readyRoutes = require('./routes/ready');
 const zoomWebhooks = require('./webhooks/zoom');
 const zoomOauth = require('./webhooks/zoom-oauth');
+const salesforceOauth = require('./webhooks/salesforce-oauth');
 const { captureRawBody, createZoomSignatureVerification } = require('./webhooks/verify');
 const errorHandler = require('./middleware/errorHandler');
 const requestLogger = require('./middleware/requestLogger');
@@ -41,6 +42,7 @@ app.use(express.json({ limit: '1mb' }));
 app.use('/health', healthRoutes);
 app.use('/ready', readyRoutes);
 app.use('/oauth', zoomOauth);
+app.use('/oauth', salesforceOauth);
 
 app.use((req, res) => res.status(404).json({ ok: false, message: 'Not Found' }));
 app.use(errorHandler);
