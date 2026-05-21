@@ -187,20 +187,23 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
     endStage(persistTimer, metrics);
 
     // Cross-event_id duplicate guard: the meetings row is the source of
-    // truth for "has this meeting already been digested". A different
-    // event_id for the same meeting (or a manual replay) won't double-DM.
+    // truth for "has this meeting occurrence already been digested". A
+    // different event_id for the same occurrence (or a manual replay)
+    // won't double-DM. Keyed on uuid (per-occurrence), so recurring
+    // meetings produce one digest per occurrence — not one per series.
     const guardTimer = startStage('duplicateGuard');
-    const existingMeeting = await meetings.findByZoomId(meetingSummary.zoomMeetingId);
+    const existingMeeting = await meetings.findByUuid(meetingSummary.zoomMeetingUuid);
     endStage(guardTimer, metrics);
 
     if (existingMeeting?.digest_sent_at) {
       log.info(
         {
           zoomMeetingId: meetingSummary.zoomMeetingId,
+          zoomMeetingUuid: meetingSummary.zoomMeetingUuid,
           existingDigestTs: existingMeeting.digest_slack_ts,
           existingDigestSentAt: existingMeeting.digest_sent_at,
         },
-        'Digest already sent for this meeting; skipping duplicate delivery'
+        'Digest already sent for this meeting occurrence; skipping duplicate delivery'
       );
       const response = {
         ok: true,
@@ -358,7 +361,7 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
     }
 
     const updateTimer = startStage('updateMeetingDeliveryStatus');
-    await meetings.saveExtractionAndDigest(meetingSummary.zoomMeetingId, intelligence, delivery);
+    await meetings.saveExtractionAndDigest(meetingSummary.zoomMeetingUuid, intelligence, delivery);
     endStage(updateTimer, metrics);
 
     const result = {
@@ -379,7 +382,7 @@ async function processMeeting(rawEvent, { correlationId: providedCorrelationId }
     log.error({ err, stage: 'processMeeting' }, 'Meeting pipeline failed');
 
     if (meetingSummary?.zoomMeetingId) {
-      await meetings.recordError(meetingSummary.zoomMeetingId, err.message).catch((dbErr) => {
+      await meetings.recordError(meetingSummary.zoomMeetingUuid, err.message).catch((dbErr) => {
         log.error({ dbErr }, 'Failed to persist meeting failure metadata');
       });
     }

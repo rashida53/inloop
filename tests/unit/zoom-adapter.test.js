@@ -35,6 +35,50 @@ describe('adaptZoomPayload', () => {
     expect(typeof summary.extractedAt).toBe('string');
     expect(Array.isArray(summary.attendees)).toBe(true);
     expect(Array.isArray(summary.warnings)).toBe(true);
+    // uuid is required for the meetings-table per-occurrence dedup. The
+    // base fixture doesn't include one, so the adapter synthesizes a
+    // fallback from zoomMeetingId + start_time.
+    expect(typeof summary.zoomMeetingUuid).toBe('string');
+    expect(summary.zoomMeetingUuid.length).toBeGreaterThan(0);
+  });
+
+  test('extracts per-occurrence uuid when Zoom provides one', () => {
+    const event = fixtures.meetingSummaryCompleted({
+      object: { uuid: 'real-zoom-uuid-base64==' },
+    });
+    const summary = adaptZoomPayload(event.object, event.event_id);
+    expect(summary.zoomMeetingUuid).toBe('real-zoom-uuid-base64==');
+  });
+
+  test('two occurrences of the same recurring meeting series produce distinct uuids', () => {
+    // Real-world bug: same zoom_id (e.g. daily standup 84740555455) across
+    // multiple days. The uuid must differ per occurrence so the meetings
+    // table doesn't dedupe them into one row.
+    const day1 = fixtures.meetingSummaryCompleted({
+      object: { uuid: 'occurrence-mon==', start_time: '2026-05-20T14:00:00Z' },
+    });
+    const day2 = fixtures.meetingSummaryCompleted({
+      object: { uuid: 'occurrence-tue==', start_time: '2026-05-21T14:00:00Z' },
+    });
+
+    const monSummary = adaptZoomPayload(day1.object, day1.event_id);
+    const tueSummary = adaptZoomPayload(day2.object, day2.event_id);
+
+    expect(monSummary.zoomMeetingId).toBe(tueSummary.zoomMeetingId);
+    expect(monSummary.zoomMeetingUuid).not.toBe(tueSummary.zoomMeetingUuid);
+  });
+
+  test('falls back to synthetic uuid when Zoom omits one', () => {
+    // Defensive: if Zoom ever sends a payload without uuid (unlikely but
+    // possible for legacy/test events), the adapter still produces a
+    // unique-enough id so the pipeline keeps running.
+    const event = fixtures.meetingSummaryCompleted({
+      object: { uuid: undefined, start_time: '2026-05-21T14:00:00Z' },
+    });
+    delete event.object.uuid;
+    const summary = adaptZoomPayload(event.object, event.event_id);
+    expect(summary.zoomMeetingUuid).toContain('99887766');
+    expect(summary.zoomMeetingUuid).toContain('2026-05-21');
   });
 
   test('deduplicates attendees by email and tags the host', () => {

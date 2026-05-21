@@ -52,7 +52,7 @@ function happyPathDbResponses() {
     users_find_by_email: { rows: [INTERNAL_HOST_ROW] },
     idempotency_claim: { rows: [{ key: 'k', status: 'processing', response: null, owner_id: 1 }] },
     meetings_upsert_from_webhook: { rows: [{ id: 'meet_uuid_01' }] },
-    meetings_find_by_zoom_id: {
+    meetings_find_by_uuid: {
       rows: [{ id: 'meet_uuid_01', zoom_id: '99887766', digest_sent_at: null, digest_slack_ts: null }],
     },
     meetings_save_extraction_and_digest: { rows: [], rowCount: 1 },
@@ -91,7 +91,7 @@ describe('processMeeting — happy path', () => {
       'idempotency_claim',
       'users_find_by_email',
       'meetings_upsert_from_webhook',
-      'meetings_find_by_zoom_id',
+      'meetings_find_by_uuid',
       'meetings_save_extraction_and_digest',
       'idempotency_save',
     ];
@@ -160,7 +160,7 @@ describe('processMeeting — cross-event_id duplicate (digest already sent)', ()
   test('skips Slack delivery when meetings.digest_sent_at is set', async () => {
     dbHandle.mockQueryByName({
       ...happyPathDbResponses(),
-      meetings_find_by_zoom_id: {
+      meetings_find_by_uuid: {
         rows: [
           {
             id: 'meet_uuid_01',
@@ -187,6 +187,68 @@ describe('processMeeting — cross-event_id duplicate (digest already sent)', ()
     expect(slackMock.conversationsOpen).not.toHaveBeenCalled();
     // And no Claude call — extraction is downstream of the guard
     expect(Anthropic.__create).not.toHaveBeenCalled();
+  });
+
+  test('recurring meeting series: two occurrences (same zoom_id, different uuid) both produce digests', async () => {
+    // Real-world bug from 2026-05-21: a daily standup webhook arrived
+    // with the same zoom_id as yesterday's standup. The duplicate guard
+    // was previously keyed on zoom_id, which incorrectly treated today's
+    // occurrence as a duplicate of yesterday's. The fix keys on uuid
+    // (per-occurrence). This test pins that behavior so we never
+    // regress.
+    //
+    // Setup: findByUuid returns "no existing meeting" for both calls —
+    // since each occurrence is its own row, the lookup misses both times.
+    dbHandle.mockQueryByName({
+      users_find_by_email: { rows: [INTERNAL_HOST_ROW] },
+      idempotency_claim: [
+        { rows: [{ key: 'k1', status: 'processing', response: null, owner_id: 1, reclaimed: false }] },
+        { rows: [{ key: 'k2', status: 'processing', response: null, owner_id: 1, reclaimed: false }] },
+      ],
+      meetings_upsert_from_webhook: [
+        { rows: [{ id: 'meet_uuid_day1' }] },
+        { rows: [{ id: 'meet_uuid_day2' }] },
+      ],
+      meetings_find_by_uuid: [
+        { rows: [] }, // day 1: no prior occurrence row
+        { rows: [] }, // day 2: still no row for THIS occurrence
+      ],
+      meetings_save_extraction_and_digest: { rows: [], rowCount: 1 },
+      idempotency_save: { rows: [{ status: 'done' }] },
+    });
+    Anthropic.__create.mockResolvedValue(claudeFixtures.messagesCreateSuccess);
+    slackMock.conversationsOpen.mockResolvedValue(slackFixtures.conversationsOpenSuccess);
+    slackMock.chatPostMessage.mockResolvedValue(slackFixtures.chatPostMessageSuccess);
+
+    // Same zoom_id (99887766), different per-occurrence uuid + start_time
+    const day1 = zoomFixtures.meetingSummaryCompleted({
+      event_id: 'evt_standup_day1',
+      object: { uuid: 'occurrence-mon==', start_time: '2026-05-20T14:00:00Z' },
+    });
+    const day2 = zoomFixtures.meetingSummaryCompleted({
+      event_id: 'evt_standup_day2',
+      object: { uuid: 'occurrence-tue==', start_time: '2026-05-21T14:00:00Z' },
+    });
+
+    const result1 = await processMeeting(day1);
+    const result2 = await processMeeting(day2);
+
+    // Both occurrences produced a digest — the previous zoom_id-keyed
+    // guard would have skipped day2 here.
+    expect(result1).toMatchObject({ ok: true, delivered: true });
+    expect(result2).toMatchObject({ ok: true, delivered: true });
+
+    // And the upsert queries received DIFFERENT uuids in $1.
+    const upsertCalls = dbHandle.findQueryCalls('meetings_upsert_from_webhook');
+    expect(upsertCalls).toHaveLength(2);
+    expect(upsertCalls[0].values[0]).toBe('occurrence-mon==');
+    expect(upsertCalls[1].values[0]).toBe('occurrence-tue==');
+    // ...but the same zoom_id ($2), confirming the series link is preserved.
+    expect(upsertCalls[0].values[1]).toBe('99887766');
+    expect(upsertCalls[1].values[1]).toBe('99887766');
+
+    // Two Slack DMs sent — one per occurrence.
+    expect(slackMock.chatPostMessage).toHaveBeenCalledTimes(2);
   });
 });
 

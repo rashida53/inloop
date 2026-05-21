@@ -31,7 +31,8 @@ const logger = require('../utils/logger');
 
 /**
  * @typedef {Object} MeetingSummary
- * @property {string} zoomMeetingId - Zoom meeting ID (unique)
+ * @property {string} zoomMeetingId - Zoom meeting series ID (persistent across recurring occurrences)
+ * @property {string} zoomMeetingUuid - Zoom per-occurrence UUID (unique per meeting instance — use for dedup)
  * @property {string} title - Meeting title/topic
  * @property {string} hostEmail - Host email address
  * @property {string} [hostName] - Host full name
@@ -334,6 +335,16 @@ function adaptZoomPayload(rawPayload, eventId) {
     return null;
   }
 
+  // Per-occurrence UUID. Zoom assigns a fresh uuid for every meeting
+  // instance even when zoom_id (the series ID) is the same. This is the
+  // identifier we key the meetings table on so recurring meetings don't
+  // overwrite each other. Fallback for the rare missing-uuid case: a
+  // synthetic id derived from zoomMeetingId + start_time, which keeps the
+  // pipeline running even if the per-occurrence dedup is weaker.
+  const zoomMeetingUuid =
+    safeString(rawPayload.uuid, '', 'meetingUuid') ||
+    `${zoomMeetingId}:${rawPayload.start_time || Date.now()}`;
+
   const hostEmail = safeString(
     rawPayload.host_email,
     '',
@@ -423,6 +434,7 @@ function adaptZoomPayload(rawPayload, eventId) {
   // Build internal representation
   const meetingSummary = {
     zoomMeetingId,
+    zoomMeetingUuid,
     title,
     hostEmail,
     hostName: safeString(rawPayload.host_name || rawPayload.host, '', 'hostName'),
@@ -527,6 +539,7 @@ const EXAMPLE_ZOOM_PAYLOAD = {
  */
 const EXAMPLE_MEETING_SUMMARY = {
   zoomMeetingId: '12345678901',
+  zoomMeetingUuid: 'aBc123XyZ456+dEf==',
   title: 'Q2 Planning Meeting',
   hostEmail: 'alice@company.com',
   hostName: 'Alice Chen',
@@ -615,6 +628,14 @@ function adaptTranscriptCompleted(rawObject, accountId, rawEvent, eventId) {
     return null;
   }
 
+  // Per-occurrence UUID — see MeetingSummary typedef for why this differs
+  // from zoomMeetingId for recurring meetings. Fallback synthesizes a
+  // unique id from the (zoomMeetingId, start_time, eventId) tuple so
+  // pipelines still progress when uuid is missing.
+  const zoomMeetingUuid =
+    safeString(rawObject.uuid, '', 'meetingUuid') ||
+    `${zoomMeetingId}:${rawObject.start_time || eventId || Date.now()}`;
+
   // Locate the TRANSCRIPT file in the recording bundle.
   const recordingFiles = Array.isArray(rawObject.recording_files)
     ? rawObject.recording_files
@@ -655,6 +676,7 @@ function adaptTranscriptCompleted(rawObject, accountId, rawEvent, eventId) {
 
   const result = {
     zoomMeetingId,
+    zoomMeetingUuid,
     title,
     hostEmail,
     hostName: safeString(rawObject.host_name || rawObject.host, '', 'hostName'),
