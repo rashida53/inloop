@@ -64,6 +64,58 @@ function buildListSection(title, items, maxItems = 5) {
   };
 }
 
+// Badge prefix per playbook check action — keeps the rendering visually
+// consistent with the action enum defined in the playbook rule files.
+const ACTION_BADGES = {
+  reconcile_conflict: '🚨',
+  confirm_with_client: '⚠️',
+  internal_check: '📊',
+  sizing_check: '📐',
+  internal_setup: '⚙️',
+};
+
+const PLAYBOOK_LABELS = {
+  iroas: 'Guaranteed iROAS',
+  sales_lift: 'Sales Lift Study',
+};
+
+/**
+ * Render Claude's playbookChecks output as a single Slack section.
+ * Returns null when there are no checks — callers should treat null as
+ * "no section to add" rather than including an empty block.
+ *
+ * Visual order: reconcile_conflict first (most urgent), then the rest.
+ * Within each action group, ordering is whatever Claude produced — usually
+ * tracks the gate order in the playbook rule files.
+ */
+function buildPlaybookChecksSection(playbookChecks) {
+  if (!Array.isArray(playbookChecks) || playbookChecks.length === 0) {
+    return null;
+  }
+
+  const sortedChecks = [...playbookChecks].sort((a, b) => {
+    if (a.action === 'reconcile_conflict' && b.action !== 'reconcile_conflict') return -1;
+    if (b.action === 'reconcile_conflict' && a.action !== 'reconcile_conflict') return 1;
+    return 0;
+  });
+
+  const lines = sortedChecks.slice(0, 10).map((check) => {
+    const badge = ACTION_BADGES[check.action] || '•';
+    const playbook = PLAYBOOK_LABELS[check.playbookId] || check.playbookId;
+    const title = truncateText(check.title || 'Untitled check', 100);
+    const detail = truncateText(check.detail || '', 280);
+    return `${badge} *${title}* _(${playbook})_\n${detail}`;
+  });
+
+  return {
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: `*Playbook checks:*\n${lines.join('\n\n')}`,
+    },
+  };
+}
+
 /**
  * Public entry point. Dispatches to a per-meeting-type renderer based on
  * intelligence.meetingType (set by the Claude extraction classifier).
@@ -279,6 +331,16 @@ function buildDefaultBlocks(meetingSummary, intelligence) {
       )}`,
     },
   });
+
+  // Playbook checks (gIROAS / Sales Lift) — only render when Claude
+  // detected one or more playbooks apply to this meeting. Placed at the
+  // bottom so it doesn't push the standard digest content off-screen on
+  // mobile when checks aren't relevant.
+  const playbookSection = buildPlaybookChecksSection(intelligence.playbookChecks);
+  if (playbookSection) {
+    blocks.push({ type: 'divider' });
+    blocks.push(playbookSection);
+  }
 
   if (blocks.length > MAX_BLOCKS) {
     return blocks.slice(0, MAX_BLOCKS - 1).concat({

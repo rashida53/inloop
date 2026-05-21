@@ -1,6 +1,7 @@
 const { Anthropic } = require('@anthropic-ai/sdk');
 const config = require('../config');
 const logger = require('../utils/logger');
+const { buildPlaybooksPromptContext } = require('./playbooks');
 
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || 'claude-opus-4-7';
 const EFFORT = process.env.CLAUDE_EFFORT || 'high';
@@ -90,6 +91,36 @@ const extractionSchema = {
     setupBlockers: { type: 'array', items: { type: 'string' } },
     audienceRequests: { type: 'array', items: { type: 'string' } },
     materialsNeeded: { type: 'array', items: { type: 'string' } },
+
+    // AM playbook checks — populated when the transcript indicates one or
+    // more of InMarket's AM playbooks (Guaranteed iROAS, Sales Lift Study)
+    // apply. Empty array when no playbook is triggered. See the playbook
+    // context block in the system prompt for the trigger keywords and the
+    // gate definitions Claude maps against.
+    playbookChecks: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          playbookId: { type: 'string', enum: ['iroas', 'sales_lift'] },
+          gateId: { type: 'string' },
+          action: {
+            type: 'string',
+            enum: [
+              'confirm_with_client',
+              'internal_check',
+              'internal_setup',
+              'sizing_check',
+              'reconcile_conflict',
+            ],
+          },
+          title: { type: 'string' },
+          detail: { type: 'string' },
+        },
+        required: ['playbookId', 'gateId', 'action', 'title', 'detail'],
+        additionalProperties: false,
+      },
+    },
   },
   required: [
     'meetingType',
@@ -101,6 +132,7 @@ const extractionSchema = {
     'setupBlockers',
     'audienceRequests',
     'materialsNeeded',
+    'playbookChecks',
   ],
   additionalProperties: false,
 };
@@ -175,7 +207,9 @@ Guidelines:
 - Read the entire transcript before answering.
 - Favor specifics from the transcript over generic sales advice.
 - If a field cannot be inferred, return a short honest fallback ("unknown", "" for strings; [] for arrays).
-- Write in clean, professional language suitable for sales and customer success.`;
+- Write in clean, professional language suitable for sales and customer success.
+
+${buildPlaybooksPromptContext()}`;
 
 function buildMetadataContext(metadata) {
   return [

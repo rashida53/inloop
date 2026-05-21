@@ -23,6 +23,10 @@ const intelligenceJson = {
   setupBlockers: [],
   audienceRequests: [],
   materialsNeeded: [],
+  // No playbook triggers in this transcript fixture — Claude's expected
+  // output is an empty array. Tests that exercise playbook rendering
+  // override this field with synthetic checks.
+  playbookChecks: [],
   salesforceNotes: {
     dealStage: 'Pilot Agreed',
     opportunityName: 'Acme — Analytics Pilot',
