@@ -27,6 +27,32 @@ const intelligenceJson = {
   // output is an empty array. Tests that exercise playbook rendering
   // override this field with synthetic checks.
   playbookChecks: [],
+  // CDS Bucket B fixture — a realistic-but-modest Acme pilot meeting
+  // doesn't generate a full campaign brief. Most fields empty, a few
+  // populated to keep the shape valid. Tests that exercise CDS
+  // rendering override individual fields.
+  campaignDetails: {
+    internalDueDate: '',
+    momentsVsAudiencesAllocation: '',
+    areThereFlightedBudgets: '',
+    budgetGoalTier1: 0,
+    budgetGoalTier2: 0,
+    budgetGoalTier3: 0,
+    customMocksNeeded: '',
+    campaignCreativeType: [],
+    primaryKpi: '',
+    primaryKpiClientBenchmark: '',
+    secondaryKpi: '',
+    secondaryKpiClientBenchmark: '',
+    geoTargeting: '',
+    viewabilityGoals: '',
+    brandSafetyGoals: '',
+    fraudGoals: '',
+    momentsTargeting: '',
+    audiencesOutOfLocationTargeting: '',
+    proposedAddedValue: '',
+    notes: '',
+  },
   salesforceNotes: {
     dealStage: 'Pilot Agreed',
     opportunityName: 'Acme — Analytics Pilot',

@@ -121,6 +121,67 @@ const extractionSchema = {
         additionalProperties: false,
       },
     },
+
+    // Bucket B for the Salesforce Campaign Details Form. Populated when
+    // meetingType is rfp_review or inmarket_overview (i.e., sales-pitch
+    // meetings); all fields empty/zero for internal/other meetings.
+    //
+    // The downstream salesforce-cds.js module merges this output with
+    // the Opp-derived Bucket A and inserts a Campaign_Details_Form__c
+    // record. Conventions in this object mirror how InMarket AMs fill
+    // out the CDS today (see 2026-05-26 sample task in Asana):
+    //   - geoTargeting + momentsTargeting: SHORT labels, not long lists
+    //   - notes: structured multi-plan format with pricing per plan
+    //   - primaryKpi vs primaryKpiClientBenchmark: distinct concepts
+    //   - budget tiers: full dollars as numbers, ordered by rep preference
+    campaignDetails: {
+      type: 'object',
+      properties: {
+        internalDueDate: { type: 'string' },
+        momentsVsAudiencesAllocation: { type: 'string' },
+        areThereFlightedBudgets: { type: 'string', enum: ['Yes', 'No', ''] },
+        budgetGoalTier1: { type: 'number' },
+        budgetGoalTier2: { type: 'number' },
+        budgetGoalTier3: { type: 'number' },
+        customMocksNeeded: { type: 'string', enum: ['Yes', 'No', ''] },
+        campaignCreativeType: { type: 'array', items: { type: 'string' } },
+        primaryKpi: { type: 'string' },
+        primaryKpiClientBenchmark: { type: 'string' },
+        secondaryKpi: { type: 'string' },
+        secondaryKpiClientBenchmark: { type: 'string' },
+        geoTargeting: { type: 'string' },
+        viewabilityGoals: { type: 'string' },
+        brandSafetyGoals: { type: 'string' },
+        fraudGoals: { type: 'string' },
+        momentsTargeting: { type: 'string' },
+        audiencesOutOfLocationTargeting: { type: 'string' },
+        proposedAddedValue: { type: 'string', enum: ['Yes', 'No', ''] },
+        notes: { type: 'string' },
+      },
+      required: [
+        'internalDueDate',
+        'momentsVsAudiencesAllocation',
+        'areThereFlightedBudgets',
+        'budgetGoalTier1',
+        'budgetGoalTier2',
+        'budgetGoalTier3',
+        'customMocksNeeded',
+        'campaignCreativeType',
+        'primaryKpi',
+        'primaryKpiClientBenchmark',
+        'secondaryKpi',
+        'secondaryKpiClientBenchmark',
+        'geoTargeting',
+        'viewabilityGoals',
+        'brandSafetyGoals',
+        'fraudGoals',
+        'momentsTargeting',
+        'audiencesOutOfLocationTargeting',
+        'proposedAddedValue',
+        'notes',
+      ],
+      additionalProperties: false,
+    },
   },
   required: [
     'meetingType',
@@ -133,6 +194,7 @@ const extractionSchema = {
     'audienceRequests',
     'materialsNeeded',
     'playbookChecks',
+    'campaignDetails',
   ],
   additionalProperties: false,
 };
@@ -177,10 +239,94 @@ For "internal":
   audience size estimates for QSR vertical in Atlanta DMA")
 - materialsNeeded: pre-sales decks, one-pagers, case studies requested
 
-For any field that doesn't apply to the chosen meetingType, return an
-empty string (for string fields) or empty array (for array fields). Do
-not invent data. customerProfile object fields can be empty strings if
-not discussed.
+For "rfp_review" and "inmarket_overview" — also populate campaignDetails:
+
+  campaignDetails is the Bucket B pre-fill for InMarket's Salesforce
+  Campaign Details Form (CDS). Follow the AM team's conventions exactly,
+  because the AM picks up the CDS draft and either accepts it or has to
+  rewrite — get these right and they'll accept it:
+
+  - internalDueDate: ISO-8601 date for InMarket's internal turnaround
+    (when the brief is due back to the client). If not stated, default
+    to 5 business days from the meeting date. Empty string if the
+    meeting wasn't about a proposal.
+
+  - momentsVsAudiencesAllocation: budget split as "X/Y" where X is the
+    Moments percentage and Y is the Audiences (Preceptivity) percentage.
+    Examples: "50/50", "70/30", "Moments-only", "100/0". Empty string if
+    not discussed.
+
+  - areThereFlightedBudgets: "Yes" only if multiple separate flights are
+    discussed (e.g., BTS launch + holiday push as separate flights).
+    "No" otherwise (default). Empty string only if you cannot tell.
+
+  - budgetGoalTier1/Tier2/Tier3: in FULL DOLLARS as numbers (e.g.,
+    500000, NOT 500 or "$500k"). Tier 1 is the REP'S PRIMARY plan, NOT
+    the largest amount — could be the most ambitious or the safest,
+    depends on how the rep ordered them in the call. Tier 2 is the
+    second-preference plan, Tier 3 is the third. Use 0 for tiers that
+    weren't discussed.
+
+  - customMocksNeeded: "Yes" if the rep mentioned needing custom creative
+    mocks for the client. "No" if standard creative will be used or it
+    wasn't discussed.
+
+  - campaignCreativeType: array selecting from these exact values:
+    "Static", "GIF", "Rich Media", "Social", "CTV", "OLV",
+    "Landing Page", "DOOH", "High-Impact". Empty array if not specified.
+
+  - primaryKpi vs primaryKpiClientBenchmark: TWO DIFFERENT CONCEPTS.
+    primaryKpi is what InMarket OPTIMIZES TO (the operational dial:
+    "Clicks", "Delivery", "Impressions", "CTR"). primaryKpiClientBenchmark
+    is what the CLIENT MEASURES SUCCESS BY (the business outcome:
+    "iROAS", "Sales Lift", "DIF", "Incremental Sales"). Don't put
+    iROAS in primaryKpi — that's a benchmark, not an optimization target.
+
+  - secondaryKpi / secondaryKpiClientBenchmark: same distinction, for
+    secondary metrics.
+
+  - geoTargeting: SHORT label — e.g., "National - see notes below",
+    "Publix only", "Whole Foods + Sprouts + Meijer". Long retailer
+    lists belong in notes, not here. Field is Text(255).
+
+  - viewabilityGoals / brandSafetyGoals / fraudGoals: typically empty
+    in early-stage discovery calls. Only populate if explicitly stated.
+
+  - momentsTargeting: SHORT label — e.g., "InPath and InStore",
+    "InStore only", "Push notifications at point-of-purchase". Detailed
+    audience segments belong in audiencesOutOfLocationTargeting.
+
+  - audiencesOutOfLocationTargeting: long-form audience description.
+    Include: known shoppers of specific retailers, competitor brand
+    buyers (name them), category buyers, geotypes (e.g., "Moms with
+    kids in HH, primary shoppers"), new-to-brand / lapsed purchasers.
+    Multi-bullet structure is fine.
+
+  - proposedAddedValue: "Yes" if InMarket is offering bonus impressions,
+    free creative, free insights, sales lift study, or similar value-
+    adds beyond paid media. "No" otherwise.
+
+  - notes: STRUCTURED plan/pricing detail. When multiple plans are
+    discussed, format as a numbered list with budget, CPE, CPM, bonus
+    impressions per plan. Example shape (from a real meeting):
+
+      Three plans:
+      1. Publix only $150k, 5% bonus, sales lift study. CPE: .70, CPM $7.00
+      2. gIROAS $500k, national retailers, 15% bonus impressions. CPE: .60, CPM $6.00
+      3. gIROAS $300k, national retailers, 10% bonus impressions. CPE: .65, CPM $6.50
+
+    This is the AM's primary reference when staffing the campaign — make
+    it scannable. If only one plan was discussed, use a single paragraph
+    with the same fields (budget, CPE, CPM, bonus, lift study yes/no).
+
+For "internal" and "other" meetingTypes, return campaignDetails with all
+fields empty (empty strings, 0 for numbers, empty array for the creative
+type array).
+
+For any other field that doesn't apply to the chosen meetingType, return
+an empty string (for string fields) or empty array (for array fields).
+Do not invent data. customerProfile object fields can be empty strings
+if not discussed.
 
 Then, for every meeting you process, return two artifacts:
 

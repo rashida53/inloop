@@ -70,4 +70,65 @@ describe('extractMeetingIntelligence', () => {
     await expect(extractMeetingIntelligence('', metadata)).rejects.toThrow(/required/i);
     await expect(extractMeetingIntelligence('   \n  ', metadata)).rejects.toThrow(/required/i);
   });
+
+  test('schema requires campaignDetails with all 20 CDS Bucket B fields', async () => {
+    Anthropic.__create.mockResolvedValueOnce(claudeFixtures.messagesCreateSuccess);
+    await extractMeetingIntelligence(transcript, metadata);
+
+    const schema = Anthropic.__create.mock.calls[0][0].output_config.format.schema;
+    expect(schema.required).toContain('campaignDetails');
+
+    const cd = schema.properties.campaignDetails;
+    expect(cd.type).toBe('object');
+    // Spot-check the AM-convention-distinguishing fields are present
+    expect(cd.required).toEqual(
+      expect.arrayContaining([
+        'primaryKpi',
+        'primaryKpiClientBenchmark',
+        'secondaryKpi',
+        'secondaryKpiClientBenchmark',
+        'budgetGoalTier1',
+        'budgetGoalTier2',
+        'budgetGoalTier3',
+        'momentsVsAudiencesAllocation',
+        'geoTargeting',
+        'momentsTargeting',
+        'audiencesOutOfLocationTargeting',
+        'notes',
+      ])
+    );
+    // 20 fields total
+    expect(cd.required.length).toBe(20);
+    // Numbers for budget tiers (full dollars, not "$500k" strings)
+    expect(cd.properties.budgetGoalTier1.type).toBe('number');
+    // Multi-picklist as array
+    expect(cd.properties.campaignCreativeType.type).toBe('array');
+    // Yes/No enums for the three picklists
+    expect(cd.properties.areThereFlightedBudgets.enum).toEqual(['Yes', 'No', '']);
+    expect(cd.properties.customMocksNeeded.enum).toEqual(['Yes', 'No', '']);
+    expect(cd.properties.proposedAddedValue.enum).toEqual(['Yes', 'No', '']);
+  });
+
+  test('system prompt includes the AM conventions for Bucket B', async () => {
+    Anthropic.__create.mockResolvedValueOnce(claudeFixtures.messagesCreateSuccess);
+    await extractMeetingIntelligence(transcript, metadata);
+
+    const systemPrompt = Anthropic.__create.mock.calls[0][0].system[0].text;
+
+    // Distinct concept: KPI vs Client Benchmark
+    expect(systemPrompt).toMatch(/primaryKpi vs primaryKpiClientBenchmark/i);
+    expect(systemPrompt).toMatch(/optimi[sz]es to/i);
+    expect(systemPrompt).toMatch(/client measures success/i);
+
+    // Short labels for Geo and Moments
+    expect(systemPrompt).toMatch(/SHORT label/);
+
+    // Budget tiers in full dollars, ordered by rep preference
+    expect(systemPrompt).toMatch(/FULL DOLLARS/);
+    expect(systemPrompt).toMatch(/REP'S PRIMARY plan/);
+
+    // Notes structured format
+    expect(systemPrompt).toMatch(/Three plans/);
+    expect(systemPrompt).toMatch(/CPE.*CPM/);
+  });
 });
