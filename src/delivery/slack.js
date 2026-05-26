@@ -64,67 +64,69 @@ function buildListSection(title, items, maxItems = 5) {
   };
 }
 
-// Badge prefix per playbook check action — keeps the rendering visually
-// consistent with the action enum defined in the playbook rule files.
-const ACTION_BADGES = {
-  reconcile_conflict: '🚨',
-  confirm_with_client: '⚠️',
-  internal_check: '📊',
-  sizing_check: '📐',
-  internal_setup: '⚙️',
-};
-
 const PLAYBOOK_LABELS = {
   iroas: 'Guaranteed iROAS',
   sales_lift: 'Sales Lift Study',
 };
 
 /**
- * Render Claude's playbookChecks output as a single Slack section.
- * Returns null when there are no checks — callers should treat null as
- * "no section to add" rather than including an empty block.
- *
- * Visual order: reconcile_conflict first (most urgent), then the rest.
- * Within each action group, ordering is whatever Claude produced — usually
- * tracks the gate order in the playbook rule files.
+ * Sort AM checklist items with reconcile_conflict first (most urgent),
+ * then everything else in source order.
  */
-function buildPlaybookChecksSection(playbookChecks) {
-  if (!Array.isArray(playbookChecks) || playbookChecks.length === 0) {
-    return null;
-  }
-
-  const sortedChecks = [...playbookChecks].sort((a, b) => {
+function sortChecks(playbookChecks) {
+  return [...playbookChecks].sort((a, b) => {
     if (a.action === 'reconcile_conflict' && b.action !== 'reconcile_conflict') return -1;
     if (b.action === 'reconcile_conflict' && a.action !== 'reconcile_conflict') return 1;
     return 0;
   });
+}
 
-  const lines = sortedChecks.slice(0, 10).map((check) => {
-    const badge = ACTION_BADGES[check.action] || '•';
-    const playbook = PLAYBOOK_LABELS[check.playbookId] || check.playbookId;
-    const title = truncateText(check.title || 'Untitled check', 100);
-    const detail = truncateText(check.detail || '', 280);
-    return `${badge} *${title}* _(${playbook})_\n${detail}`;
-  });
+/**
+ * Render Claude's playbookChecks output as an array of Slack blocks for
+ * the AM checklist section. Header block + one section per check.
+ * Returns an empty array when there are no checks.
+ *
+ * Format per check (just bold title + detail — the title's action verb
+ * already conveys urgency, so we don't add a redundant action tag):
+ *   *Title*
+ *   Detail text...
+ *
+ * Conflicts sort to the top via sortChecks() so the most urgent items
+ * are visible first. Slack caps section text at 3000 chars, so each
+ * check gets its own block. Capped at 10 checks to bound message length.
+ */
+function buildAmChecklistBlocks(playbookChecks) {
+  if (!Array.isArray(playbookChecks) || playbookChecks.length === 0) {
+    return [];
+  }
 
-  return {
-    type: 'section',
-    text: {
-      type: 'mrkdwn',
-      text: `*Playbook checks:*\n${lines.join('\n\n')}`,
+  const sortedChecks = sortChecks(playbookChecks);
+
+  const blocks = [
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: '*AM checklist:*' },
     },
-  };
+  ];
+
+  for (const check of sortedChecks.slice(0, 10)) {
+    const title = truncateText(check.title || 'Untitled check', 150);
+    const detail = truncateText(check.detail || '', 600);
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${title}*\n${detail}`,
+      },
+    });
+  }
+
+  return blocks;
 }
 
 /**
  * Public entry point. Dispatches to a per-meeting-type renderer based on
  * intelligence.meetingType (set by the Claude extraction classifier).
- *
- * For now, every type renderer delegates to buildDefaultBlocks — no
- * observable behavior change. Per-type rendering (Highspot deck injection
- * for inmarket_overview, computed timeline for rfp_review, blockers/asks
- * highlight for internal) gets filled in incrementally as sales-lead
- * requirements are confirmed.
  */
 function buildBlocks(meetingSummary, intelligence) {
   const type = intelligence?.meetingType || 'other';
@@ -146,9 +148,11 @@ function buildBlocks(meetingSummary, intelligence) {
 
 /**
  * Inmarket Overview digest. First-touch meetings with new prospects.
- * Builds the standard digest but augments the follow-up email body with
- * the canonical Highspot deck link, and appends an AM Handoff section
- * with the specific items the AM needs to file the RFP intake.
+ * Builds the standard digest plus an AM Handoff list at the bottom.
+ *
+ * Note: intelligence.followUpEmail.body is still augmented with the
+ * Highspot link for downstream features that consume it from the DB,
+ * even though the body itself isn't rendered in the digest today.
  */
 function buildOverviewBlocks(meetingSummary, intelligence) {
   const augmented = {
@@ -167,7 +171,7 @@ function buildOverviewBlocks(meetingSummary, intelligence) {
     blocks.push(buildListSection('AM Handoff', handoff, 6));
   }
 
-  return blocks;
+  return clampBlocks(blocks);
 }
 
 function appendHighspotIfConfigured(body) {
@@ -179,11 +183,6 @@ function appendHighspotIfConfigured(body) {
 
 /**
  * RFP Review digest. Currently identical to the default renderer.
- *
- * The computed campaign timeline that was here previously was removed per
- * sales lead feedback. Claude still extracts `campaignLaunchDate` and it
- * persists into meetings.intelligence — adding the timeline back is just
- * a render change if needed.
  */
 function buildRfpBlocks(meetingSummary, intelligence) {
   return buildDefaultBlocks(meetingSummary, intelligence);
@@ -230,7 +229,7 @@ function buildInternalBlocks(meetingSummary, intelligence) {
   blocks.push({ type: 'divider' });
 
   // Blockers most important — render first even if empty (acts as audit signal).
-  blocks.push(buildListSection('🚧 Setup blockers', blockers, 5));
+  blocks.push(buildListSection('Setup blockers', blockers, 5));
   blocks.push(buildListSection('Audience requests', audienceRequests, 5));
   blocks.push(buildListSection('Pre-sales materials needed', materialsNeeded, 5));
 
@@ -263,9 +262,11 @@ function buildInternalBlocks(meetingSummary, intelligence) {
 }
 
 /**
- * Default Block Kit renderer — pre-typing behavior, used for `other` and
- * (currently) every other meeting type. Reads from a normalized MeetingSummary
- * (adapter output) and the extracted intelligence (claude.js output).
+ * Default Block Kit renderer — single-message digest.
+ *
+ * Previous iteration split into main + threaded reply, but the right-rail
+ * thread pane was too cramped to read. Reverted to single message; the
+ * modal/button approach is the planned next step to address scroll fatigue.
  */
 function buildDefaultBlocks(meetingSummary, intelligence) {
   // Note: intelligence.followUpEmail is still generated by Claude and persisted
@@ -332,27 +333,27 @@ function buildDefaultBlocks(meetingSummary, intelligence) {
     },
   });
 
-  // Playbook checks (gIROAS / Sales Lift) — only render when Claude
-  // detected one or more playbooks apply to this meeting. Placed at the
-  // bottom so it doesn't push the standard digest content off-screen on
-  // mobile when checks aren't relevant.
-  const playbookSection = buildPlaybookChecksSection(intelligence.playbookChecks);
-  if (playbookSection) {
+  // AM checklist — gIROAS / Sales Lift playbook-derived items. Only
+  // rendered when Claude detected one or more playbooks apply. Each
+  // check is its own section block (Slack's 3000-char-per-section cap).
+  const checklistBlocks = buildAmChecklistBlocks(intelligence.playbookChecks);
+  if (checklistBlocks.length > 0) {
     blocks.push({ type: 'divider' });
-    blocks.push(playbookSection);
+    blocks.push(...checklistBlocks);
   }
 
-  if (blocks.length > MAX_BLOCKS) {
-    return blocks.slice(0, MAX_BLOCKS - 1).concat({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: '_Additional details removed to keep Slack mobile-friendly._',
-      },
-    });
-  }
+  return clampBlocks(blocks);
+}
 
-  return blocks;
+function clampBlocks(blocks) {
+  if (blocks.length <= MAX_BLOCKS) return blocks;
+  return blocks.slice(0, MAX_BLOCKS - 1).concat({
+    type: 'section',
+    text: {
+      type: 'mrkdwn',
+      text: '_Additional details removed to keep Slack mobile-friendly._',
+    },
+  });
 }
 
 function isRateLimitedError(err) {

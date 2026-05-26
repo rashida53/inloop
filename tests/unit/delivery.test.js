@@ -46,7 +46,7 @@ describe('deliverToSlack', () => {
     expect(postArgs.channel).toBe('D01ALICEDM');
     expect(Array.isArray(postArgs.blocks)).toBe(true);
     expect(postArgs.blocks.length).toBeGreaterThan(0);
-    expect(typeof postArgs.text).toBe('string'); // fallback text required
+    expect(typeof postArgs.text).toBe('string');
 
     expect(result).toEqual({ ts: '1715800000.001100', channel: 'D01ALICEDM' });
   });
@@ -96,16 +96,16 @@ describe('deliverToSlack', () => {
     expect(allText).toMatch(/Decision makers/);
   });
 
-  test('omits the Playbook checks section when intelligence.playbookChecks is empty', async () => {
+  test('omits the AM checklist when intelligence.playbookChecks is empty', async () => {
     // Default fixture has playbookChecks: [] — verify no section is rendered.
     __mocks.chatPostMessage.mockResolvedValueOnce(slackFixtures.chatPostMessageSuccess);
     await deliverToSlack(buildArgs({ channelId: 'C01TEAMCH' }));
 
     const allText = JSON.stringify(__mocks.chatPostMessage.mock.calls[0][0].blocks);
-    expect(allText).not.toMatch(/Playbook checks/);
+    expect(allText).not.toMatch(/\*AM checklist:\*/);
   });
 
-  test('renders a Playbook checks section when intelligence has gIROAS gates', async () => {
+  test('renders an AM checklist section when intelligence has gIROAS gates', async () => {
     __mocks.chatPostMessage.mockResolvedValueOnce(slackFixtures.chatPostMessageSuccess);
 
     const args = buildArgs({ channelId: 'C01TEAMCH' });
@@ -118,7 +118,7 @@ describe('deliverToSlack', () => {
           action: 'reconcile_conflict',
           title: 'Moments allocation conflict',
           detail:
-            'Client requested Moments-only but gIROAS playbook caps Moments at 30% of budget. Reconcile with Michael Perez before next call.',
+            'Client requested Moments-only but gIROAS playbook caps Moments at 30%. Reconcile with Michael Perez before next call.',
         },
         {
           playbookId: 'iroas',
@@ -133,16 +133,17 @@ describe('deliverToSlack', () => {
     await deliverToSlack(args);
 
     const allText = JSON.stringify(__mocks.chatPostMessage.mock.calls[0][0].blocks);
-    expect(allText).toMatch(/Playbook checks/);
+    expect(allText).toMatch(/AM checklist/);
     expect(allText).toMatch(/Moments allocation conflict/);
     expect(allText).toMatch(/iROAS as core KPI/);
-    // Conflict gets the alarm badge
-    expect(allText).toMatch(/🚨/);
-    // Confirm-with-client gets the warning badge
-    expect(allText).toMatch(/⚠️/);
-    // Playbook label appears alongside each check (helps the AM know which
-    // rulebook a given check came from)
-    expect(allText).toMatch(/Guaranteed iROAS/);
+    // No emoji badges anywhere
+    expect(allText).not.toMatch(/🚨|⚠️|📊|📐|⚙️/);
+    // No bracket tags either (removed per user feedback as redundant
+    // with the action verb already in the title)
+    expect(allText).not.toMatch(/\[CONFLICT\]|\[CONFIRM\]|\[VERIFY\]|\[SIZING\]|\[SETUP\]/);
+    // Source playbook labels removed per user feedback ("noise")
+    expect(allText).not.toMatch(/Guaranteed iROAS/);
+    expect(allText).not.toMatch(/Sales Lift Study/);
   });
 
   test('sorts reconcile_conflict checks before other actions', async () => {
@@ -174,13 +175,52 @@ describe('deliverToSlack', () => {
     await deliverToSlack(args);
 
     const blocks = __mocks.chatPostMessage.mock.calls[0][0].blocks;
-    const playbookBlock = blocks.find(
-      (b) => b.type === 'section' && b.text?.text?.startsWith('*Playbook checks:*')
+    const headerIdx = blocks.findIndex(
+      (b) => b.type === 'section' && b.text?.text === '*AM checklist:*'
     );
-    expect(playbookBlock).toBeDefined();
-    const conflictIdx = playbookBlock.text.text.indexOf('Moments conflict');
-    const confirmIdx = playbookBlock.text.text.indexOf('Confirm iROAS KPI');
-    expect(conflictIdx).toBeGreaterThan(-1);
-    expect(confirmIdx).toBeGreaterThan(conflictIdx);
+    expect(headerIdx).toBeGreaterThan(-1);
+
+    const checkBlocks = blocks.slice(headerIdx + 1);
+    const conflictBlockIdx = checkBlocks.findIndex((b) =>
+      b.text?.text?.includes('Moments conflict')
+    );
+    const confirmBlockIdx = checkBlocks.findIndex((b) =>
+      b.text?.text?.includes('Confirm iROAS KPI')
+    );
+    expect(conflictBlockIdx).toBeGreaterThan(-1);
+    expect(confirmBlockIdx).toBeGreaterThan(conflictBlockIdx);
+  });
+
+  test('renders each AM checklist check as its own section block (Slack 3000-char cap)', async () => {
+    __mocks.chatPostMessage.mockResolvedValueOnce(slackFixtures.chatPostMessageSuccess);
+
+    const args = buildArgs({ channelId: 'C01TEAMCH' });
+    args.intelligence = {
+      ...args.intelligence,
+      playbookChecks: Array.from({ length: 8 }, (_, i) => ({
+        playbookId: 'iroas',
+        gateId: `gate_${i}`,
+        action: 'internal_setup',
+        title: `Check ${i}`,
+        detail: 'x'.repeat(400),
+      })),
+    };
+
+    await deliverToSlack(args);
+
+    const blocks = __mocks.chatPostMessage.mock.calls[0][0].blocks;
+    const headerIdx = blocks.findIndex(
+      (b) => b.type === 'section' && b.text?.text === '*AM checklist:*'
+    );
+    expect(headerIdx).toBeGreaterThan(-1);
+
+    const checkBlocks = blocks
+      .slice(headerIdx + 1)
+      .filter((b) => b.type === 'section' && /\*Check \d/.test(b.text?.text || ''));
+    expect(checkBlocks).toHaveLength(8);
+
+    for (const b of [blocks[headerIdx], ...checkBlocks]) {
+      expect(b.text.text.length).toBeLessThan(3000);
+    }
   });
 });
